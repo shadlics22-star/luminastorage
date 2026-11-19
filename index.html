@@ -18,7 +18,6 @@
         <div class="form-group"><label for="loginPassword">Senha</label><input id="loginPassword" type="password" autocomplete="current-password" required></div>
         <p class="login-error" id="loginError" role="alert"></p>
         <button class="primary-button" type="submit">Entrar</button>
-        <small class="initial-login">Acesso inicial: admin / admin</small>
       </form>
     </section>
     <div class="app-shell" id="appShell" hidden>
@@ -33,6 +32,7 @@
         <a class="nav-item" href="#conferencia" data-view="conferencia"><span class="nav-icon">▦</span><span class="nav-text">Conferência</span></a>
         <a class="nav-item" href="#movimentacao" data-view="movimentacao"><span class="nav-icon">⇄</span><span class="nav-text">Movimentação</span></a>
         <a class="nav-item" href="#estoque" data-view="estoque"><span class="nav-icon">▤</span><span class="nav-text">Estoque</span></a>
+        <a class="nav-item" href="#estatisticas" data-view="estatisticas"><span class="nav-icon">▥</span><span class="nav-text">Estatísticas</span></a>
         <a class="nav-item admin-only" href="#gestao" data-view="gestao" hidden><span class="nav-icon">⚙</span><span class="nav-text">Gestão</span></a>
         <div class="sidebar-note"><span class="status-dot"></span><div><strong>Dados neste dispositivo</strong><small>Salvos automaticamente</small></div></div>
       </aside>
@@ -84,12 +84,22 @@
           <div id="movementContent"></div>
         </section>
 
+        <section class="page-view statistics-view" id="estatisticasView" hidden>
+          <div class="section-heading"><div><p class="eyebrow">DESEMPENHO DE OPERAÇÃO</p><h2>Estatísticas</h2></div></div>
+          <div class="statistics-filters">
+            <div class="form-group" id="operatorFilterGroup" hidden><label for="statisticsOperator">Operador</label><select id="statisticsOperator"></select></div>
+            <div class="form-group"><label for="statisticsPeriod">Período</label><select id="statisticsPeriod"><option value="24h">Últimas 24 horas</option><option value="3d">Últimos 3 dias</option><option value="7d">Últimos 7 dias</option><option value="1m">Último mês</option><option value="3m">Últimos 3 meses</option><option value="6m">Últimos 6 meses</option><option value="1y">Último ano</option></select></div>
+          </div>
+          <div class="statistics-summary" id="statisticsSummary"></div>
+          <div class="statistics-columns"><section class="statistics-panel"><h3>Clientes bipados</h3><div id="statisticsClients"></div></section><section class="statistics-panel"><h3>Produtos mais cadastrados</h3><div id="statisticsProducts"></div></section></div>
+        </section>
+
         <section class="page-view management-view" id="gestaoView" hidden>
           <div class="section-heading"><div><p class="eyebrow">ADMINISTRAÇÃO</p><h2>Gestão de usuários</h2></div></div>
           <form class="user-form" id="userForm">
             <div class="form-row"><div class="form-group"><label for="userName">Nome do colaborador *</label><input id="userName" maxlength="100" required></div><div class="form-group"><label for="newLogin">Login *</label><input id="newLogin" maxlength="60" autocomplete="off" required></div></div>
-            <div class="form-row"><div class="form-group"><label for="newPassword">Senha *</label><input id="newPassword" type="password" minlength="4" autocomplete="new-password" required></div><div class="form-group"><label for="userPhone">Telefone</label><input id="userPhone" type="tel" maxlength="30"></div></div>
-            <div class="form-group"><label for="userEmail">E-mail</label><input id="userEmail" type="email" maxlength="120"></div>
+            <div class="form-row"><div class="form-group"><label for="newPassword">Senha *</label><input id="newPassword" type="password" minlength="4" autocomplete="new-password" required></div><div class="form-group"><label for="userRole">Perfil *</label><select id="userRole" required><option value="user">Operador</option><option value="admin">Administrador</option></select></div></div>
+            <div class="form-row"><div class="form-group"><label for="userPhone">Telefone</label><input id="userPhone" type="tel" maxlength="30"></div><div class="form-group"><label for="userEmail">E-mail</label><input id="userEmail" type="email" maxlength="120"></div></div>
             <p class="inline-error" id="userFormError"></p><button class="primary-button" type="submit">Adicionar usuário</button>
           </form>
           <div class="users-table-wrap"><table><thead><tr><th>COLABORADOR</th><th>LOGIN</th><th>TELEFONE</th><th>E-MAIL</th><th>PERFIL</th><th>AÇÃO</th></tr></thead><tbody id="userRows"></tbody></table></div>

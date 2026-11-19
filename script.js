@@ -1,7 +1,9 @@
 const STORAGE_KEY = 'cd-inventory-v1';
 const USERS_KEY = 'lumina-users-v1';
 const SESSION_KEY = 'lumina-session-v1';
+const SCANS_KEY = 'lumina-scan-history-v1';
 const products = loadProducts();
+let scanHistory = loadScanHistory();
 let users = loadUsers();
 let currentUser = null;
 let inventoryFilter = '';
@@ -54,6 +56,32 @@ function saveUsers() {
   localStorage.setItem(USERS_KEY, JSON.stringify(users));
 }
 
+function loadScanHistory() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SCANS_KEY) || '[]');
+    return Array.isArray(saved) ? saved.filter(scan => scan && scan.login && scan.timestamp) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveScanHistory() {
+  localStorage.setItem(SCANS_KEY, JSON.stringify(scanHistory));
+}
+
+function registerScan(product, quantity) {
+  scanHistory.push({
+    login: currentUser.login,
+    operatorName: currentUser.name,
+    productEan: product.ean,
+    productName: product.description,
+    client: product.client,
+    quantity,
+    timestamp: new Date().toISOString()
+  });
+  saveScanHistory();
+}
+
 function isAdmin() {
   return currentUser?.role === 'admin';
 }
@@ -77,6 +105,7 @@ function showView(name) {
   if (name === 'movimentacao') renderMovement();
   if (name === 'dashboard') renderDashboard();
   if (name === 'gestao' && isAdmin()) renderUsers();
+  if (name === 'estatisticas') renderStatistics();
 }
 
 function cleanEan(value) {
@@ -235,6 +264,7 @@ function promptScanDetails(ean) {
       existingProduct.location = location;
       if (expirationDate) existingProduct.expirationDate = expirationDate;
       existingProduct.quantity += amount;
+      registerScan(existingProduct, amount);
       saveProducts();
       renderInventory();
       renderDashboard();
@@ -299,7 +329,9 @@ function showUnitForm(ean) {
     }
     const initialQuantity = pendingScan?.quantity || 1;
     const initialLocation = pendingScan?.location || '';
-    products.push({ean, sku: document.getElementById('sku').value.trim(), description: document.getElementById('description').value.trim(), client: selectedClient, location: initialLocation, expirationDate: pendingScan?.expirationDate || '', quantity: initialQuantity, masters: []});
+    const newProduct = {ean, sku: document.getElementById('sku').value.trim(), description: document.getElementById('description').value.trim(), client: selectedClient, location: initialLocation, expirationDate: pendingScan?.expirationDate || '', quantity: initialQuantity, masters: []};
+    products.push(newProduct);
+    registerScan(newProduct, initialQuantity);
     saveProducts(); renderInventory(); renderDashboard(); closeModal(); showMessage(`Produto cadastrado e ${initialQuantity} unidade(s) adicionada(s) ao estoque.`);
   });
 }
@@ -347,6 +379,7 @@ function showMasterForm(masterEan, unitEan = '') {
     product.location = pendingScan?.location || product.location;
     if (pendingScan?.expirationDate) product.expirationDate = pendingScan.expirationDate;
     product.quantity += addedUnits;
+    registerScan(product, addedUnits);
     saveProducts(); renderInventory(); renderDashboard(); closeModal(); showMessage(`Caixa master vinculada: +${addedUnits} unidades de ${product.description}.`);
   });
 }
@@ -457,7 +490,8 @@ const viewSections = {
   conferencia: document.getElementById('conferenciaView'),
   movimentacao: document.getElementById('movimentacaoView'),
   estoque: document.getElementById('estoqueView'),
-  gestao: document.getElementById('gestaoView')
+  gestao: document.getElementById('gestaoView'),
+  estatisticas: document.getElementById('estatisticasView')
 };
 
 document.querySelectorAll('.nav-item[data-view]').forEach(link => link.addEventListener('click', event => {
@@ -527,7 +561,7 @@ document.getElementById('userForm').addEventListener('submit', event => {
     error.textContent = 'Este login já está sendo utilizado.';
     return;
   }
-  users.push({name: document.getElementById('userName').value.trim(), login, password: document.getElementById('newPassword').value, phone: document.getElementById('userPhone').value.trim(), email: document.getElementById('userEmail').value.trim(), role: 'user'});
+  users.push({name: document.getElementById('userName').value.trim(), login, password: document.getElementById('newPassword').value, phone: document.getElementById('userPhone').value.trim(), email: document.getElementById('userEmail').value.trim(), role: document.getElementById('userRole').value});
   saveUsers();
   event.currentTarget.reset();
   error.textContent = '';
@@ -546,8 +580,59 @@ document.getElementById('userRows').addEventListener('click', event => {
 
 function renderUsers() {
   const rows = document.getElementById('userRows');
-  rows.innerHTML = users.map(user => `<tr><td>${escapeHtml(user.name)}</td><td>${escapeHtml(user.login)}</td><td>${escapeHtml(user.phone || '—')}</td><td>${escapeHtml(user.email || '—')}</td><td>${user.role === 'admin' ? 'Administrador' : 'Colaborador'}</td><td>${user.login === 'admin' || user.login === currentUser?.login ? '—' : `<button class="remove-unit-button" type="button" data-delete-user="${escapeHtml(user.login)}">Remover</button>`}</td></tr>`).join('');
+  rows.innerHTML = users.map(user => `<tr><td>${escapeHtml(user.name)}</td><td>${escapeHtml(user.login)}</td><td>${escapeHtml(user.phone || '—')}</td><td>${escapeHtml(user.email || '—')}</td><td>${user.role === 'admin' ? 'Administrador' : 'Operador'}</td><td>${user.login === 'admin' || user.login === currentUser?.login ? '—' : `<button class="remove-unit-button" type="button" data-delete-user="${escapeHtml(user.login)}">Remover</button>`}</td></tr>`).join('');
 }
+
+function periodStart(period) {
+  const now = new Date();
+  const start = new Date(now);
+  if (period === '24h') return new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  if (period.endsWith('d')) start.setDate(start.getDate() - Number(period.slice(0, -1)));
+  else if (period.endsWith('m')) start.setMonth(start.getMonth() - Number(period.slice(0, -1)));
+  else if (period.endsWith('y')) start.setFullYear(start.getFullYear() - Number(period.slice(0, -1)));
+  return start;
+}
+
+function renderStatistics() {
+  const operatorGroup = document.getElementById('operatorFilterGroup');
+  const operatorSelect = document.getElementById('statisticsOperator');
+  let login = currentUser.login;
+  if (isAdmin()) {
+    operatorGroup.hidden = false;
+    const operators = users.filter(user => user.role !== 'admin');
+    const previous = operatorSelect.value;
+    operatorSelect.innerHTML = '<option value="all">Todos os operadores</option>' + operators.map(user => `<option value="${escapeHtml(user.login)}">${escapeHtml(user.name)} (${escapeHtml(user.login)})</option>`).join('');
+    if (operators.some(user => user.login === previous)) operatorSelect.value = previous;
+    login = operatorSelect.value;
+  } else {
+    operatorGroup.hidden = true;
+  }
+  const start = periodStart(document.getElementById('statisticsPeriod').value);
+  const scans = scanHistory.filter(scan => {
+    const timestamp = new Date(scan.timestamp);
+    return timestamp >= start && timestamp <= new Date() && (isAdmin() ? login === 'all' || scan.login === login : scan.login === currentUser.login);
+  });
+  const quantity = scans.reduce((sum, scan) => sum + (Number(scan.quantity) || 0), 0);
+  document.getElementById('statisticsSummary').innerHTML = `<article class="stat-card"><div class="stat-top"><span>Produtos bipados</span><span class="stat-icon purple">▦</span></div><strong>${quantity.toLocaleString('pt-BR')}</strong><small>Unidades registradas no período</small></article><article class="stat-card"><div class="stat-top"><span>Leituras realizadas</span><span class="stat-icon blue">↗</span></div><strong>${scans.length.toLocaleString('pt-BR')}</strong><small>Bipagens registradas</small></article><article class="stat-card"><div class="stat-top"><span>Clientes atendidos</span><span class="stat-icon orange">♙</span></div><strong>${new Set(scans.map(scan => scan.client).filter(Boolean)).size.toLocaleString('pt-BR')}</strong><small>Clientes distintos</small></article>`;
+  const byClient = new Map();
+  const byProduct = new Map();
+  scans.forEach(scan => {
+    const clientKey = scan.client || 'Sem cliente';
+    byClient.set(clientKey, (byClient.get(clientKey) || 0) + (Number(scan.quantity) || 0));
+    const productKey = scan.productEan;
+    const existing = byProduct.get(productKey) || {name: scan.productName || 'Produto', client: scan.client || '—', quantity: 0};
+    existing.quantity += Number(scan.quantity) || 0;
+    byProduct.set(productKey, existing);
+  });
+  const listMarkup = entries => entries.length ? `<ul class="statistics-list">${entries.map(([name, value]) => `<li><span><strong>${escapeHtml(name)}</strong>${value.detail ? `<small>${escapeHtml(value.detail)}</small>` : ''}</span><b>${escapeHtml(value.count.toLocaleString('pt-BR'))} un.</b></li>`).join('')}</ul>` : '<p class="statistics-empty">Sem bipagens neste período.</p>';
+  const clients = [...byClient.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => [name, {count}]);
+  const rankedProducts = [...byProduct.entries()].sort((a, b) => b[1].quantity - a[1].quantity).slice(0, 10).map(([ean, item]) => [item.name, {count: item.quantity, detail: `${item.client} · EAN ${ean}`}]);
+  document.getElementById('statisticsClients').innerHTML = listMarkup(clients);
+  document.getElementById('statisticsProducts').innerHTML = listMarkup(rankedProducts);
+}
+
+ document.getElementById('statisticsPeriod').addEventListener('change', renderStatistics);
+document.getElementById('statisticsOperator').addEventListener('change', renderStatistics);
 
 document.getElementById('todayLabel').textContent = new Intl.DateTimeFormat('pt-BR', {weekday:'short', day:'2-digit', month:'short', year:'numeric'}).format(new Date());
 const savedLogin = sessionStorage.getItem(SESSION_KEY);
