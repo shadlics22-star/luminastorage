@@ -14,7 +14,7 @@
         <p class="eyebrow">LUMINA · SMART STORAGE</p>
         <h1>Acesse sua conta</h1>
         <p class="login-description">Entre para continuar no sistema de estoque.</p>
-        <div class="form-group"><label for="loginUser">Login</label><input id="loginUser" autocomplete="username" required></div>
+        <div class="form-group"><label for="loginUser">E-mail</label><input id="loginUser" type="email" autocomplete="username" required></div>
         <div class="form-group"><label for="loginPassword">Senha</label><input id="loginPassword" type="password" autocomplete="current-password" required></div>
         <p class="login-error" id="loginError" role="alert"></p>
         <button class="primary-button" type="submit">Entrar</button>
@@ -172,6 +172,61 @@
         <div id="modalBody"></div>
       </section>
     </div>
-    <script src="script.js"></script>
+    <script>
+      (function () {
+        const sdkUrls = [
+          "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js",
+          "https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"
+        ];
+
+        function showLoadError(message) {
+          const box = document.getElementById("loginError");
+          if (box) box.textContent = message;
+          console.error("[Lumina]", message);
+        }
+
+        function loadScript(url) {
+          return new Promise((resolve, reject) => {
+            const tag = document.createElement("script");
+            tag.src = url;
+            tag.onload = resolve;
+            tag.onerror = () => reject(new Error("Falha ao carregar " + url));
+            document.head.appendChild(tag);
+          });
+        }
+
+        async function start() {
+          let sdkLoaded = false;
+          for (const url of sdkUrls) {
+            try {
+              await loadScript(url);
+              if (window.supabase && typeof window.supabase.createClient === "function") {
+                sdkLoaded = true;
+                break;
+              }
+            } catch (error) {
+              console.warn(error.message);
+            }
+          }
+
+          if (!sdkLoaded) {
+            showLoadError("Não foi possível carregar a biblioteca do Supabase. Verifique sua internet e atualize a página.");
+            return;
+          }
+
+          try {
+            await loadScript("supabase.js");
+            if (!window.luminaDb || !window.luminaDb.auth) {
+              throw new Error(window.luminaSupabaseError || "A conexão do Supabase não foi inicializada.");
+            }
+            await loadScript("script.js");
+          } catch (error) {
+            showLoadError(error.message || "Falha ao iniciar o Lumina.");
+          }
+        }
+
+        start();
+      })();
+    </script>
   </body>
 </html>
