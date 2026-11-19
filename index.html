@@ -171,8 +171,55 @@
         <div id="modalBody"></div>
       </section>
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="supabase.js"></script>
-    <script src="script.js"></script>
+    <script>
+      // Carrega o SDK do Supabase, inicializa o cliente e só então carrega o app.
+      (function () {
+        const sdkUrls = [
+          "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js",
+          "https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"
+        ];
+
+        function showError(message) {
+          const error = document.getElementById("loginError");
+          if (error) error.textContent = message;
+          console.error("[Lumina]", message);
+        }
+
+        function loadScript(url, onload, onerror) {
+          const tag = document.createElement("script");
+          tag.src = url;
+          tag.onload = onload;
+          tag.onerror = onerror || function () {
+            showError("Não foi possível carregar " + url + ". Verifique a internet e tente novamente.");
+          };
+          document.head.appendChild(tag);
+        }
+
+        function loadSdk(index) {
+          loadScript(sdkUrls[index], function () {
+            if (!window.supabase || typeof window.supabase.createClient !== "function") {
+              if (index + 1 < sdkUrls.length) return loadSdk(index + 1);
+              showError("A biblioteca do Supabase carregou, mas não disponibilizou createClient.");
+              return;
+            }
+
+            loadScript("supabase.js", function () {
+              if (!window.luminaDb || !window.luminaDb.auth ||
+                  typeof window.luminaDb.auth.getSession !== "function") {
+                showError(window.luminaSupabaseError ||
+                  "O cliente Supabase foi criado sem o módulo de autenticação. Confira supabase.js.");
+                return;
+              }
+              loadScript("script.js");
+            });
+          }, function () {
+            if (index + 1 < sdkUrls.length) loadSdk(index + 1);
+            else showError("Não foi possível carregar o Supabase pelos dois endereços. Verifique sua conexão.");
+          });
+        }
+
+        loadSdk(0);
+      })();
+    </script>
   </body>
 </html>
