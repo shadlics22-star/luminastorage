@@ -69,7 +69,7 @@ document.addEventListener('keydown',event=>{if($('conferenciaView').hidden||!eve
 document.addEventListener('keydown',event=>{if($('conferenciaView').hidden||!event.altKey)return;if(event.key==='1'){document.querySelector('input[name="scanType"][value="unit"]').checked=true;eanInput.focus()}else if(event.key==='2'){document.querySelector('input[name="scanType"][value="master"]').checked=true;eanInput.focus()}});
 document.querySelectorAll('.nav-item[data-view]').forEach(link=>link.addEventListener('click',event=>{event.preventDefault();if(link.dataset.view==='gestao'&&!isAdmin())return;showView(link.dataset.view);if(matchMedia('(max-width:650px)').matches)document.querySelector('.sidebar').classList.remove('expanded')}));$('sidebarToggle').addEventListener('click',event=>{const sidebar=document.querySelector('.sidebar'),mobile=matchMedia('(max-width:650px)').matches;if(mobile){sidebar.classList.toggle('expanded');event.currentTarget.setAttribute('aria-expanded',String(sidebar.classList.contains('expanded')))}else{$('appShell').classList.toggle('sidebar-collapsed');const expanded=!$('appShell').classList.contains('sidebar-collapsed');event.currentTarget.setAttribute('aria-expanded',String(expanded));event.currentTarget.setAttribute('aria-label',expanded?'Recolher menu':'Expandir menu')}});
 $('inventorySearchForm').addEventListener('submit',e=>{e.preventDefault();inventoryFilter=$('inventoryEan').value.trim();renderInventory()});$('inventoryClientFilter').addEventListener('change',renderInventory);$('inventoryStatusFilter').addEventListener('change',renderInventory);$('auditOpen').addEventListener('click',()=>openAudit());$('clearInventoryFilter').addEventListener('click',()=>{inventoryFilter='';renderInventory();$('inventoryEan').focus()});$('exportClient').addEventListener('change',renderInventoryExport);$('exportCsvButton').addEventListener('click',exportInventoryCsv);$('historyCsvButton').addEventListener('click',exportHistoryCsv);$('backupExportButton').addEventListener('click',exportBackupJson);$('backupImportFile').addEventListener('change',importBackupJson);
-$('loginForm').addEventListener('submit',async event=>{event.preventDefault();const email=$('loginUser').value.trim().toLowerCase(),password=$('loginPassword').value;try{if(!window.luminaDb?.auth)throw new Error(window.luminaSupabaseError||'A autenticação do Supabase não foi inicializada. Atualize a página; se persistir, confira a publicação de supabase.js e a conexão.');$('loginError').textContent='Conectando...';const {data,error}=await window.luminaDb.auth.signInWithPassword({email,password});if(error)throw error;const {data:profile,error:profileError}=await window.luminaDb.from('profiles').select('*').eq('id',data.user.id).single();if(profileError)throw profileError;const user={id:data.user.id,email:data.user.email,login:profile.login||data.user.email,name:profile.full_name||data.user.email,phone:profile.phone||'',role:profile.role};users=[user];currentUser=user;$('loginError').textContent='';await loadCloudData();enterApp(user)}catch(error){$('loginError').textContent=error.message||'Não foi possível entrar.'}});$('logoutButton').addEventListener('click',async()=>{if(window.luminaDb?.auth)await window.luminaDb.auth.signOut();sessionStorage.removeItem(SESSION_KEY);currentUser=null;$('appShell').hidden=true;$('loginScreen').hidden=false;$('loginPassword').value='';$('loginUser').focus()});
+$('loginForm').addEventListener('submit',async event=>{event.preventDefault();const email=$('loginUser').value.trim().toLowerCase(),password=$('loginPassword').value;try{if(!window.luminaDb)throw new Error(window.luminaSupabaseError||'O cliente Supabase não foi inicializado. Recarregue a página e verifique a conexão.');$('loginError').textContent='Conectando...';const {data,error}=await window.luminaDb.auth.signInWithPassword({email,password});if(error)throw error;const {data:profile,error:profileError}=await window.luminaDb.from('profiles').select('*').eq('id',data.user.id).single();if(profileError)throw profileError;const user={id:data.user.id,email:data.user.email,login:profile.login||data.user.email,name:profile.full_name||data.user.email,phone:profile.phone||'',role:profile.role};users=[user];currentUser=user;$('loginError').textContent='';await loadCloudData();enterApp(user)}catch(error){$('loginError').textContent=error.message||'Não foi possível entrar.'}});$('logoutButton').addEventListener('click',async()=>{await window.luminaDb.auth.signOut();sessionStorage.removeItem(SESSION_KEY);currentUser=null;$('appShell').hidden=true;$('loginScreen').hidden=false;$('loginPassword').value='';$('loginUser').focus()});
 $('userForm').addEventListener('submit',async event=>{event.preventDefault();$('userFormError').textContent='Cadastre usuários em Authentication → Users no Supabase. A criação segura pelo painel será integrada por Edge Function.';return;event.preventDefault();if(!isAdmin())return;const login=$('newLogin').value.trim(),error=$('userFormError');if(users.some(u=>u.login.toLowerCase()===login.toLowerCase())){error.textContent='Este login já está sendo utilizado.';return}try{const passwordHash=await hashPassword($('newPassword').value);users.push({name:$('userName').value.trim(),login,passwordHash,phone:$('userPhone').value.trim(),email:$('userEmail').value.trim(),role:$('userRole').value});saveUsers();event.currentTarget.reset();error.textContent='';renderUsers()}catch(e){error.textContent=e.message}});$('userRows').addEventListener('click',event=>{const button=event.target.closest('[data-delete-user]');if(!button||!isAdmin())return;const login=button.dataset.deleteUser;if(login==='admin'||login===currentUser.login)return;users=users.filter(u=>u.login!==login);saveUsers();renderUsers()});function renderUsers(){$('userRows').innerHTML=users.map(u=>`<tr><td>${escapeHtml(u.name)}</td><td>${escapeHtml(u.login)}</td><td>${escapeHtml(u.phone||'—')}</td><td>${escapeHtml(u.email||'—')}</td><td>${u.role==='admin'?'Administrador':'Operador'}</td><td><button class="edit-product-button" type="button" data-edit-user="${escapeHtml(u.login)}">Editar</button> ${u.login==='admin'||u.login===currentUser?.login?'—':`<button class="remove-unit-button" type="button" data-delete-user="${escapeHtml(u.login)}">Remover</button>`}</td></tr>`).join('')}
 function editUser(login){if(!isAdmin())return;const user=users.find(u=>u.login===login);if(!user)return;const protectedRole=login==='admin'||login===currentUser.login;showModal({eyebrow:'GESTÃO DE USUÁRIOS',title:'Editar colaborador',description:`Atualize os dados de ${user.name}.`,content:`<form id="editUserForm"><div class="form-group"><label for="editUserName">Nome *</label><input id="editUserName" maxlength="100" value="${escapeHtml(user.name)}" required></div><div class="form-row"><div class="form-group"><label for="editUserPhone">Telefone</label><input id="editUserPhone" maxlength="30" value="${escapeHtml(user.phone||'')}"></div><div class="form-group"><label for="editUserEmail">E-mail</label><input id="editUserEmail" type="email" maxlength="120" value="${escapeHtml(user.email||'')}"></div></div><div class="form-group"><label for="editUserRole">Perfil</label><select id="editUserRole" ${protectedRole?'disabled':''}><option value="user" ${user.role==='user'?'selected':''}>Operador</option><option value="admin" ${user.role==='admin'?'selected':''}>Administrador</option></select></div><p class="inline-error" id="editUserError"></p><div class="modal-actions"><button class="primary-button" type="submit">Salvar</button></div></form>`});$('editUserForm').addEventListener('submit',event=>{event.preventDefault();user.name=$('editUserName').value.trim();user.phone=$('editUserPhone').value.trim();user.email=$('editUserEmail').value.trim();if(!protectedRole)user.role=$('editUserRole').value;saveUsers();renderUsers();closeModal()})}
 $('userRows').addEventListener('click',event=>{const button=event.target.closest('[data-edit-user]');if(button)editUser(button.dataset.editUser)})
@@ -92,12 +92,12 @@ async function syncProductsToCloud(){
   const keep=new Set(products.map(p=>p.ean)),removed=(existing||[]).map(x=>x.ean).filter(ean=>!keep.has(ean));
   if(removed.length){const {error}=await window.luminaDb.from('lumina_products').delete().in('ean',removed);if(error)throw error}
 }
-async function initializeApp(){try{if(!window.luminaDb?.auth)throw new Error(window.luminaSupabaseError||'A autenticação do Supabase não foi inicializada. Atualize a página; se persistir, confira a publicação de supabase.js e a conexão.');const {data:{session}}=await window.luminaDb.auth.getSession();if(session){const {data:profile,error}=await window.luminaDb.from('profiles').select('*').eq('id',session.user.id).single();if(error)throw error;const user={id:session.user.id,email:session.user.email,login:profile.login||session.user.email,name:profile.full_name||session.user.email,phone:profile.phone||'',role:profile.role};users=[user];currentUser=user;await loadCloudData();enterApp(user)}else $('loginUser').focus()}catch(error){$('loginError').textContent=error.message||'Falha ao iniciar o Lumina.';$('loginUser').focus()}}initializeApp();
+async function initializeApp(){try{if(!window.luminaDb)throw new Error(window.luminaSupabaseError||'O cliente Supabase não foi inicializado. Recarregue a página e verifique a conexão.');const {data:{session}}=await window.luminaDb.auth.getSession();if(session){const {data:profile,error}=await window.luminaDb.from('profiles').select('*').eq('id',session.user.id).single();if(error)throw error;const user={id:session.user.id,email:session.user.email,login:profile.login||session.user.email,name:profile.full_name||session.user.email,phone:profile.phone||'',role:profile.role};users=[user];currentUser=user;await loadCloudData();enterApp(user)}else $('loginUser').focus()}catch(error){$('loginError').textContent=error.message||'Falha ao iniciar o Lumina.';$('loginUser').focus()}}initializeApp();
 
 const baseConferencePrompt=promptScanDetails;
 promptScanDetails=function(ean){if(scanOperation()==='saida'){luminaRegisterExit(ean,selectedScanType());return}baseConferencePrompt(ean)};
 function luminaRememberLot(product,lot,location){rememberConference({lot,location,client:product?.client||'',ean:product?.ean||''})}
-function luminaRegisterExit(ean,type){if(!isAdmin())return;const product=type==='master'?products.find(p=>p.masters.some(m=>m.ean===ean)):products.find(p=>p.ean===ean);if(!product){showMessage(type==='master'?'Caixa master não cadastrada.':'Produto não cadastrado.',true);return}const master=type==='master'?product.masters.find(m=>m.ean===ean):null,factor=master?.unitsPerCase||1,lots=(product.lots||[]).filter(l=>Number(l.quantity)>0),choices=lots.length?lots:[...(product.quantity>0?[{lot:'Sem lote detalhado',expirationDate:'',location:product.location,quantity:product.quantity}]:[])];showModal({eyebrow:'CONFERÊNCIA · SAÍDA',title:'Registrar expedição',description:`${product.description}${master?` · ${factor} unidades por caixa`:''}`,icon:'−',content:`<form id="luminaExitForm"><div class="form-group"><label for="luminaExitLot">Lote *</label><select id="luminaExitLot" required>${choices.map((lot,i)=>`<option value="${i}">${escapeHtml(lot.lot||'Sem identificação')} · ${escapeHtml(formatDate(lot.expirationDate)||'sem validade')} · saldo ${Number(lot.quantity)||0} un.</option>`).join('')}</select></div><div class="form-group"><label for="luminaExitQty">Quantidade ${master?'de caixas master':'de unidades'} *</label><input id="luminaExitQty" type="number" min="1" step="1" value="1" required></div><p class="inline-error" id="luminaExitError">${choices.length?'':'Estoque insuficiente para expedição.'}</p><div class="modal-actions"><button class="primary-button" type="submit" ${choices.length?'':'disabled'}>Confirmar saída</button></div></form>`});$('luminaExitForm').addEventListener('submit',event=>{event.preventDefault();const lot=choices[Number($('luminaExitLot').value)],count=Number($('luminaExitQty').value),error=$('luminaExitError');if(!lot||!Number.isSafeInteger(count)||count<1){error.textContent='Selecione o lote e informe uma quantidade válida.';return}const units=count*factor;if(units>Number(lot.quantity)||units>product.quantity){error.textContent=`Saldo insuficiente. Disponível no lote: ${Math.floor(Number(lot.quantity)/factor)} ${master?'caixa(s)':'unidade(s)'}.`;return}if(lots.length)lot.quantity-=units;product.quantity-=units;registerScan(product,units,'saida');luminaRememberLot(product,lot.lot,lot.location||product.location);saveProducts();renderInventory();renderDashboard();renderMovement();renderInventoryExport();playScanFeedback();closeModal();showMessage(`${count} ${master?'caixa(s) master':'unidade(s)'} expedida(s): −${units} un. de ${product.description}.`)})}
+function luminaRegisterExit(ean,type){const product=type==='master'?products.find(p=>p.masters.some(m=>m.ean===ean)):products.find(p=>p.ean===ean);if(!product){showMessage(type==='master'?'Caixa master não cadastrada.':'Produto não cadastrado.',true);return}const master=type==='master'?product.masters.find(m=>m.ean===ean):null,factor=master?.unitsPerCase||1,lots=(product.lots||[]).filter(l=>Number(l.quantity)>0),choices=lots.length?lots:[...(product.quantity>0?[{lot:'Sem lote detalhado',expirationDate:'',location:product.location,quantity:product.quantity}]:[])];showModal({eyebrow:'CONFERÊNCIA · SAÍDA',title:'Registrar expedição',description:`${product.description}${master?` · ${factor} unidades por caixa`:''}`,icon:'−',content:`<form id="luminaExitForm"><div class="form-group"><label for="luminaExitLot">Lote *</label><select id="luminaExitLot" required>${choices.map((lot,i)=>`<option value="${i}">${escapeHtml(lot.lot||'Sem identificação')} · ${escapeHtml(formatDate(lot.expirationDate)||'sem validade')} · saldo ${Number(lot.quantity)||0} un.</option>`).join('')}</select></div><div class="form-group"><label for="luminaExitQty">Quantidade ${master?'de caixas master':'de unidades'} *</label><input id="luminaExitQty" type="number" min="1" step="1" value="1" required></div><p class="inline-error" id="luminaExitError">${choices.length?'':'Estoque insuficiente para expedição.'}</p><div class="modal-actions"><button class="primary-button" type="submit" ${choices.length?'':'disabled'}>Confirmar saída</button></div></form>`});$('luminaExitForm').addEventListener('submit',event=>{event.preventDefault();const lot=choices[Number($('luminaExitLot').value)],count=Number($('luminaExitQty').value),error=$('luminaExitError');if(!lot||!Number.isSafeInteger(count)||count<1){error.textContent='Selecione o lote e informe uma quantidade válida.';return}const units=count*factor;if(units>Number(lot.quantity)||units>product.quantity){error.textContent=`Saldo insuficiente. Disponível no lote: ${Math.floor(Number(lot.quantity)/factor)} ${master?'caixa(s)':'unidade(s)'}.`;return}if(lots.length)lot.quantity-=units;product.quantity-=units;registerScan(product,units,'saida');luminaRememberLot(product,lot.lot,lot.location||product.location);saveProducts();renderInventory();renderDashboard();renderMovement();renderInventoryExport();playScanFeedback();closeModal();showMessage(`${count} ${master?'caixa(s) master':'unidade(s)'} expedida(s): −${units} un. de ${product.description}.`)})}
 function openAudit(ean=''){showModal({eyebrow:'CONSULTA RÁPIDA',title:'Auditoria de EAN',description:'Inspecione produto, caixa master, saldo, lotes e endereços sem alterar o estoque.',icon:'⌕',content:`<form id="luminaAuditForm" autocomplete="off"><div class="form-group"><label for="luminaAuditEan">EAN unitário ou caixa master</label><div class="ean-entry"><input id="luminaAuditEan" value="${escapeHtml(ean)}" placeholder="Digite ou bipe um EAN"><button type="button" class="secondary-button" id="luminaAuditCamera">Câmera</button><button type="submit" class="secondary-button">Consultar</button></div></div></form><div id="luminaAuditResult" class="audit-result" aria-live="polite"></div>`});$('luminaAuditForm').addEventListener('submit',event=>{event.preventDefault();const code=cleanEan($('luminaAuditEan').value),product=products.find(p=>p.ean===code||p.masters.some(m=>m.ean===code)),master=product?.masters.find(m=>m.ean===code),result=$('luminaAuditResult');if(!product){result.innerHTML='<p>EAN não encontrado no inventário.</p>';return}result.innerHTML=`<h3>${escapeHtml(product.description)}</h3><p>Cliente: ${escapeHtml(product.client)} · SKU: ${escapeHtml(product.sku||'—')}</p><p>EAN unitário: ${escapeHtml(product.ean)}${master?` · Caixa master: ${escapeHtml(master.ean)} (${master.unitsPerCase} un./caixa)`:''}</p><p>Saldo total: <strong>${product.quantity.toLocaleString('pt-BR')} un.</strong></p><ul>${(product.lots||[]).map(l=>`<li>Lote ${escapeHtml(l.lot||'—')} · ${escapeHtml(formatDate(l.expirationDate)||'Sem validade')} · ${escapeHtml(l.location||product.location||'Sem endereço')} · ${Number(l.quantity)||0} un.</li>`).join('')||'<li>Sem lotes detalhados.</li>'}</ul>`});$('luminaAuditCamera').addEventListener('click',()=>openCamera('audit'));if(ean)$('luminaAuditForm').requestSubmit()}
 function openLabel(ean){const product=products.find(p=>p.ean===ean);if(!product)return;const lot=product.lots?.find(l=>Number(l.quantity)>0)||product.lots?.[0]||{};showModal({eyebrow:'ETIQUETA',title:'Etiqueta para impressão',description:'Imprima ou salve a etiqueta em PDF.',icon:'▤',content:`<article class="print-label"><strong>${escapeHtml(product.description)}</strong><span>SKU: ${escapeHtml(product.sku||'—')}</span><span>EAN: ${escapeHtml(product.ean)}</span><span>Lote: ${escapeHtml(lot.lot||'—')}</span><span>Validade: ${escapeHtml(formatDate(lot.expirationDate||product.expirationDate)||'—')}</span><span>Localização: ${escapeHtml(lot.location||product.location||'—')}</span></article><div class="modal-actions"><button class="primary-button" id="luminaPrintLabel" type="button">Imprimir</button></div>`});$('luminaPrintLabel').addEventListener('click',()=>{document.body.classList.add('printing-label');window.print();document.body.classList.remove('printing-label')})}
 const baseOpenProductEditor=openProductEditor;
@@ -111,3 +111,241 @@ const baseScanCameraFrame=scanCameraFrame;
 scanCameraFrame=async function(){if(!cameraActive)return;if(!modalBackdrop.classList.contains('hidden')&&!['master','inventory','audit'].includes(cameraTarget)||pendingScan){setTimeout(scanCameraFrame,180);return}if(cameraTarget==='audit'&&cameraActive&&barcodeDetector&&cameraVideo.readyState>=HTMLMediaElement.HAVE_CURRENT_DATA){try{const found=await barcodeDetector.detect(cameraVideo),code=found.find(item=>/^\d{8,14}$/.test(item.rawValue));if(code){handleCameraCode(code.rawValue);return}}catch{}if(cameraActive)setTimeout(scanCameraFrame,180);return}baseScanCameraFrame()};
 const baseHandleCameraCode=handleCameraCode;
 handleCameraCode=function(value){if(cameraTarget==='audit'){if(!cameraActive)return;stopCamera();cameraBackdrop.classList.add('hidden');const input=$('luminaAuditEan');if(input){input.value=value;$('luminaAuditForm').requestSubmit()}cameraTarget='scan';return}baseHandleCameraCode(value)};
+
+
+/* LUMINA · fluxo de aprovação de conferências e remoções */
+let conferenceBaselineProducts = [];
+let conferenceBaselineScans = [];
+let conferenceRequestBusy = false;
+let conferenceAwaitingRefresh = false;
+
+function luminaClone(value) {
+  return JSON.parse(JSON.stringify(value ?? null));
+}
+function luminaSetBaseline() {
+  conferenceBaselineProducts = luminaClone(products);
+  conferenceBaselineScans = luminaClone(scanHistory);
+  storage.set(STORAGE_KEY, JSON.stringify(products));
+  storage.set(SCANS_KEY, JSON.stringify(scanHistory));
+}
+const luminaBaseLoadCloudData = loadCloudData;
+loadCloudData = async function () {
+  await luminaBaseLoadCloudData();
+  luminaSetBaseline();
+};
+
+function luminaChangedProducts() {
+  const original = new Map(conferenceBaselineProducts.map(p => [p.ean, JSON.stringify(p)]));
+  return products.filter(p => original.get(p.ean) !== JSON.stringify(p)).map(p => luminaClone(p));
+}
+function luminaNewMovements() {
+  const original = new Set(conferenceBaselineScans.map(s => `${s.timestamp}|${s.productEan}|${s.type}|${s.quantity}`));
+  return scanHistory.filter(s => !original.has(`${s.timestamp}|${s.productEan}|${s.type}|${s.quantity}`)).map(s => luminaClone(s));
+}
+async function luminaInsertRequest(requestType, requestData) {
+  if (!currentUser?.id || !window.luminaDb) throw new Error('Sessão ou conexão com o Supabase indisponível.');
+  const { error } = await window.luminaDb.from('lumina_requests').insert({
+    request_type: requestType,
+    requester_id: currentUser.id,
+    requester_name: currentUser.name || currentUser.email || 'Operador',
+    request_data: requestData,
+    status: 'pending'
+  });
+  if (error) throw error;
+}
+async function luminaSubmitConference() {
+  if (!currentUser || isAdmin() || conferenceRequestBusy) return;
+  const message = $('conferenceSubmitMessage');
+  if (conferenceAwaitingRefresh) {
+    message.textContent = 'Sua solicitação foi enviada. Após a aprovação do administrador, atualize a página para carregar o estoque atualizado.';
+    return;
+  }
+  const button = $('submitConferenceButton');
+  const changed = luminaChangedProducts();
+  const movements = luminaNewMovements();
+  if (!changed.length && !movements.length) {
+    message.textContent = 'Não há alterações novas para enviar.';
+    return;
+  }
+  conferenceRequestBusy = true;
+  button.disabled = true;
+  message.textContent = 'Enviando solicitação…';
+  try {
+    const { data: pending, error: pendingError } = await window.luminaDb
+      .from('lumina_requests').select('id')
+      .eq('requester_id', currentUser.id).eq('request_type', 'conference').eq('status', 'pending').limit(1);
+    if (pendingError) throw pendingError;
+    if (pending?.length) throw new Error('Você já possui uma conferência aguardando aprovação. Aguarde a análise do administrador.');
+    await luminaInsertRequest('conference', {
+      changed_products: changed,
+      movements,
+      summary: `${changed.length} produto(s) alterado(s) e ${movements.length} movimentação(ões).`
+    });
+    products.splice(0, products.length, ...luminaClone(conferenceBaselineProducts));
+    scanHistory.splice(0, scanHistory.length, ...luminaClone(conferenceBaselineScans));
+    storage.set(STORAGE_KEY, JSON.stringify(products));
+    storage.set(SCANS_KEY, JSON.stringify(scanHistory));
+    renderInventory(); renderDashboard(); renderMovement(); renderInventoryExport();
+    conferenceAwaitingRefresh = true;
+    $('scanForm').querySelectorAll('input,button').forEach(control => control.disabled = true);
+    $('cameraOpen').disabled = true;
+    button.disabled = true;
+    message.textContent = 'Solicitação enviada! Aguarde a aprovação e depois atualize a página para carregar o estoque atualizado.';
+    showMessage('Conferência enviada para aprovação do administrador.');
+  } catch (error) {
+    message.textContent = error.message || 'Não foi possível enviar a conferência.';
+  } finally {
+    conferenceRequestBusy = false;
+    button.disabled = false;
+  }
+}
+
+async function luminaRequestProductRemoval(ean) {
+  const product = products.find(p => p.ean === ean);
+  if (!product || isAdmin()) return;
+  if (!confirm(`Solicitar ao administrador a remoção de "${product.description}" do estoque?`)) return;
+  const button = document.querySelector(`[data-request-remove-ean="${CSS.escape(ean)}"]`);
+  if (button) button.disabled = true;
+  try {
+    const { data: pending, error: pendingError } = await window.luminaDb
+      .from('lumina_requests').select('id')
+      .eq('requester_id', currentUser.id).eq('request_type', 'product_removal').eq('status', 'pending');
+    if (pendingError) throw pendingError;
+    const already = (pending || []).some(row => row.request_data?.ean === ean);
+    if (already) throw new Error('Já existe uma solicitação pendente para este produto.');
+    await luminaInsertRequest('product_removal', {
+      ean: product.ean,
+      product: luminaClone(product),
+      reason: 'Remoção solicitada pelo operador'
+    });
+    showMessage('Solicitação de remoção enviada para Gestão.');
+  } catch (error) {
+    showMessage(error.message || 'Não foi possível solicitar a remoção.', true);
+    if (button) button.disabled = false;
+  }
+}
+
+async function luminaRefreshPendingBadge() {
+  if (!isAdmin() || !window.luminaDb) return;
+  const dot = $('managementPendingDot');
+  const { count, error } = await window.luminaDb.from('lumina_requests')
+    .select('id', { count: 'exact', head: true }).eq('status', 'pending');
+  if (error) { console.error('Não foi possível consultar solicitações:', error); return; }
+  if (dot) dot.hidden = !(count > 0);
+  const countNode = $('pendingRequestCount');
+  if (countNode) countNode.textContent = `${count || 0} pendentes`;
+}
+
+function luminaRequestCard(request) {
+  const data = request.request_data || {};
+  const isConference = request.request_type === 'conference';
+  const title = isConference ? 'Finalização de conferência' : 'Remoção de produto';
+  const detail = isConference
+    ? (data.summary || `${(data.changed_products || []).length} produto(s) para revisar`)
+    : `${data.product?.description || 'Produto'} · EAN ${data.ean || '—'}`;
+  const date = request.created_at ? new Date(request.created_at).toLocaleString('pt-BR') : '';
+  return `<article class="management-request-card">
+    <div class="management-request-head"><div><span class="request-kind">${title}</span><strong>${escapeHtml(request.requester_name || 'Operador')}</strong></div><span class="request-status">Pendente</span></div>
+    <p>${escapeHtml(detail)}</p><small>${escapeHtml(date)}</small>
+    ${isConference && (data.changed_products || []).length ? `<details><summary>Ver produtos da conferência (${data.changed_products.length})</summary><ul>${data.changed_products.map(p => `<li>${escapeHtml(p.description || 'Produto')} · EAN ${escapeHtml(p.ean)} · ${Number(p.quantity) || 0} un.</li>`).join('')}</ul></details>` : ''}
+    ${!isConference ? `<p class="request-product-info">Cliente: ${escapeHtml(data.product?.client || '—')} · Saldo: ${Number(data.product?.quantity) || 0} un.</p>` : ''}
+    <div class="management-request-actions"><button type="button" class="primary-button" data-approve-request="${escapeHtml(request.id)}">Aprovar</button><button type="button" class="secondary-button" data-reject-request="${escapeHtml(request.id)}">Rejeitar</button></div>
+  </article>`;
+}
+async function luminaRenderManagementRequests() {
+  if (!isAdmin() || !window.luminaDb) return;
+  const container = $('managementRequests');
+  if (!container) return;
+  container.innerHTML = '<p class="statistics-empty">Carregando solicitações…</p>';
+  const { data, error } = await window.luminaDb.from('lumina_requests')
+    .select('*').eq('status', 'pending').order('created_at', { ascending: false });
+  if (error) {
+    container.innerHTML = `<p class="inline-error">${escapeHtml(error.message)}</p>`;
+    return;
+  }
+  container.innerHTML = data?.length ? data.map(luminaRequestCard).join('') :
+    '<div class="empty-state"><strong>Nenhuma solicitação pendente</strong><p>Novas conferências e pedidos de remoção aparecerão aqui.</p></div>';
+  const countNode = $('pendingRequestCount');
+  if (countNode) countNode.textContent = `${data?.length || 0} pendentes`;
+  const dot = $('managementPendingDot');
+  if (dot) dot.hidden = !(data?.length);
+}
+async function luminaDecideRequest(id, approve) {
+  const container = $('managementRequests');
+  if (container) container.querySelectorAll('button').forEach(b => b.disabled = true);
+  try {
+    const { error } = await window.luminaDb.rpc('process_lumina_request', {
+      p_request_id: id,
+      p_approve: approve
+    });
+    if (error) throw error;
+    await loadCloudData();
+    renderInventory(); renderDashboard(); renderMovement(); renderInventoryExport();
+    await luminaRenderManagementRequests();
+    showMessage(approve ? 'Solicitação aprovada e estoque atualizado.' : 'Solicitação rejeitada.');
+  } catch (error) {
+    if (container) container.querySelectorAll('button').forEach(b => b.disabled = false);
+    showMessage(error.message || 'Não foi possível processar a solicitação.', true);
+    await luminaRenderManagementRequests();
+  }
+}
+
+const luminaBaseRenderInventory = renderInventory;
+renderInventory = function () {
+  luminaBaseRenderInventory();
+  const rows = $('productRows');
+  if (!rows) return;
+  rows.querySelectorAll('tr').forEach(row => {
+    const eanNode = row.querySelector('.ean-text');
+    const cell = row.querySelector('.row-actions');
+    if (!eanNode || !cell) return;
+    const ean = eanNode.textContent.trim();
+    const button = document.createElement('button');
+    button.type = 'button';
+    if (isAdmin()) {
+      button.className = 'remove-unit-button';
+      button.textContent = 'Excluir';
+      button.dataset.adminDeleteEan = ean;
+      button.setAttribute('aria-label', `Excluir ${ean}`);
+    } else {
+      button.className = 'edit-product-button';
+      button.textContent = 'Solicitar remoção';
+      button.dataset.requestRemoveEan = ean;
+    }
+    cell.appendChild(button);
+  });
+  rows.querySelectorAll('[data-request-remove-ean]').forEach(button =>
+    button.addEventListener('click', () => luminaRequestProductRemoval(button.dataset.requestRemoveEan)));
+  rows.querySelectorAll('[data-admin-delete-ean]').forEach(button =>
+    button.addEventListener('click', async () => {
+      const ean = button.dataset.adminDeleteEan;
+      const product = products.find(p => p.ean === ean);
+      if (!product || !isAdmin()) return;
+      if (!confirm(`Excluir definitivamente "${product.description}" do estoque?`)) return;
+      button.disabled = true;
+      const { error } = await window.luminaDb.from('lumina_products').delete().eq('ean', ean);
+      if (error) { button.disabled = false; showMessage(error.message, true); return; }
+      products.splice(products.findIndex(p => p.ean === ean), 1);
+      storage.set(STORAGE_KEY, JSON.stringify(products));
+      luminaSetBaseline();
+      renderInventory(); renderDashboard(); renderMovement(); renderInventoryExport();
+      showMessage('Produto removido do estoque.');
+    }));
+};
+
+const luminaBaseRenderUsers = renderUsers;
+renderUsers = function () {
+  luminaBaseRenderUsers();
+  luminaRenderManagementRequests();
+};
+const luminaBaseEnterApp = enterApp;
+enterApp = function (user) {
+  luminaBaseEnterApp(user);
+  if (!isAdmin()) {
+    $('operatorConferencePanel').hidden = false;
+    $('submitConferenceButton').addEventListener('click', luminaSubmitConference);
+  } else {
+    $('operatorConferencePanel').hidden = true;
+    luminaRefreshPendingBadge();
+  }
+};

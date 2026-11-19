@@ -1,32 +1,23 @@
-// Lumina - inicialização do cliente Supabase.
-// A chave publishable pode ficar no frontend; proteja os dados com RLS no Supabase.
-(function () {
-  const SUPABASE_URL = "https://mthhgxkztdpyfhapwlii.supabase.co";
-  const SUPABASE_KEY = "sb_publishable_xgDWdYVmej-DniXSE0RrIg_OMDPs8PP";
 
-  try {
-    if (!window.supabase || typeof window.supabase.createClient !== "function") {
-      throw new Error("Biblioteca do Supabase não carregada (createClient indisponível).");
-    }
+const SUPABASE_URL = https://mthhgxkztdpyfhapwlii.supabase.co;
+const SUPABASE_KEY = sb_publishable_xgDWdYVmej-DniXSE0RrIg_OMDPs8PP;
 
-    const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-      auth: {
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: true
-      }
-    });
+const db = window.supabase.createClient(
+  SUPABASE_URL,
+  SUPABASE_KEY
+);
 
-    if (!client || !client.auth || typeof client.auth.getSession !== "function") {
-      throw new Error("O cliente foi criado, mas o módulo auth não está disponível. Recarregue a biblioteca Supabase.");
-    }
+async function testarConexao() {
+  const { data, error } = await db
+    .from('clients')
+    .select('*');
 
-    window.luminaDb = client;
-    window.luminaSupabaseError = "";
-    console.info("[Lumina] Supabase inicializado com autenticação.");
-  } catch (error) {
-    window.luminaDb = null;
-    window.luminaSupabaseError = error.message || "Falha ao inicializar o Supabase.";
-    console.error("[Lumina]", window.luminaSupabaseError, error);
+  if (error) {
+    console.error('Erro:', error.message);
+    return;
   }
-})();
+
+  console.log('Conexão funcionando!', data);
+}
+
+testarConexao();
