@@ -14,7 +14,7 @@
         <p class="eyebrow">LUMINA · SMART STORAGE</p>
         <h1>Acesse sua conta</h1>
         <p class="login-description">Entre para continuar no sistema de estoque.</p>
-        <div class="form-group"><label for="loginUser">Login</label><input id="loginUser" autocomplete="username" required></div>
+        <div class="form-group"><label for="loginUser">E-mail</label><input id="loginUser" type="email" autocomplete="username" required></div>
         <div class="form-group"><label for="loginPassword">Senha</label><input id="loginPassword" type="password" autocomplete="current-password" required></div>
         <p class="login-error" id="loginError" role="alert"></p>
         <button class="primary-button" type="submit">Entrar</button>
@@ -28,28 +28,30 @@
         </a>
         <button class="sidebar-toggle" id="sidebarToggle" type="button" aria-label="Recolher menu" aria-expanded="true">☰</button>
         <div class="side-label">OPERAÇÃO</div>
-        <a class="nav-item active" href="#dashboard" data-view="dashboard"><span class="nav-icon">▥</span><span class="nav-text">Dashboard</span></a>
-        <a class="nav-item" href="#conferencia" data-view="conferencia"><span class="nav-icon">▦</span><span class="nav-text">Conferência</span></a>
-        <a class="nav-item" href="#movimentacao" data-view="movimentacao"><span class="nav-icon">⇄</span><span class="nav-text">Movimentação</span></a>
-        <a class="nav-item" href="#estoque" data-view="estoque"><span class="nav-icon">▤</span><span class="nav-text">Estoque</span></a>
-        <a class="nav-item" href="#estatisticas" data-view="estatisticas"><span class="nav-icon">▥</span><span class="nav-text">Estatísticas</span></a>
-        <a class="nav-item admin-only" href="#gestao" data-view="gestao" hidden><span class="nav-icon">⚙</span><span class="nav-text">Gestão</span></a>
-        <div class="sidebar-note"><span class="status-dot"></span><div><strong>Dados neste dispositivo</strong><small>Salvos automaticamente</small></div></div>
+        <a class="nav-item active" href="#dashboard" data-view="dashboard"><span class="nav-icon" aria-hidden="true">▥</span><span class="nav-text">Dashboard</span></a>
+        <a class="nav-item" href="#conferencia" data-view="conferencia"><span class="nav-icon" aria-hidden="true">▦</span><span class="nav-text">Conferência</span></a>
+        <a class="nav-item" href="#movimentacao" data-view="movimentacao"><span class="nav-icon" aria-hidden="true">⇄</span><span class="nav-text">Movimentação</span></a>
+        <a class="nav-item" href="#estoque" data-view="estoque"><span class="nav-icon" aria-hidden="true">▤</span><span class="nav-text">Estoque</span></a>
+        <a class="nav-item" href="#estatisticas" data-view="estatisticas"><span class="nav-icon" aria-hidden="true">▥</span><span class="nav-text">Estatísticas</span></a>
+        <a class="nav-item" href="#exportar" data-view="exportar"><span class="nav-icon" aria-hidden="true">⇩</span><span class="nav-text">Exportar Inventário</span></a>
+        <a class="nav-item admin-only" href="#gestao" data-view="gestao" hidden><span class="nav-icon" aria-hidden="true">⚙</span><span class="nav-text">Gestão</span></a>
+        <div class="sidebar-note"><span class="status-dot"></span><div><strong>Banco conectado</strong><small>Dados sincronizados na nuvem</small></div></div>
+        <button class="logout-button sidebar-logout" id="logoutButton" type="button">Sair</button>
       </aside>
 
       <main class="main-content" id="inicio">
         <header class="topbar">
           <div><p class="eyebrow">OPERAÇÃO / INVENTÁRIO</p><h1>Controle de estoque</h1></div>
-          <div class="topbar-actions"><div class="today"><span class="today-icon">◷</span><span id="todayLabel"></span></div><span class="signed-in-user" id="signedInUser"></span><button class="logout-button" id="logoutButton" type="button">Sair</button></div>
+          <div class="topbar-actions"><div class="today"><span class="today-icon" aria-hidden="true">◷</span><span id="todayLabel"></span></div><span class="signed-in-user" id="signedInUser"></span></div>
         </header>
 
         <section class="page-view dashboard-view" id="dashboardView">
           <div class="section-heading"><div><p class="eyebrow">VISÃO GERAL</p><h2>Dashboard</h2></div></div>
           <div class="dashboard-grid">
-            <article class="stat-card"><div class="stat-top"><span>Produtos unitários</span><span class="stat-icon purple">▦</span></div><strong id="dashboardUnits">0</strong><small>Produtos cadastrados</small></article>
-            <article class="stat-card"><div class="stat-top"><span>Caixas master</span><span class="stat-icon blue">▣</span></div><strong id="dashboardMasters">0</strong><small>Modelos de caixa vinculados</small></article>
-            <article class="stat-card"><div class="stat-top"><span>Clientes</span><span class="stat-icon orange">♙</span></div><strong id="dashboardClients">0</strong><small>Clientes cadastrados</small></article>
-            <article class="stat-card"><div class="stat-top"><span>Próximos do vencimento</span><span class="stat-icon orange">◷</span></div><strong id="dashboardExpiring">0</strong><small>Produtos vencendo nos próximos 3 meses</small></article>
+            <article class="stat-card"><div class="stat-top"><span>Produtos unitários</span><span class="stat-icon purple" aria-hidden="true">▦</span></div><strong id="dashboardUnits">0</strong><small>Produtos cadastrados</small></article>
+            <article class="stat-card"><div class="stat-top"><span>Caixas master</span><span class="stat-icon blue" aria-hidden="true">▣</span></div><strong id="dashboardMasters">0</strong><small>Modelos de caixa vinculados</small></article>
+            <article class="stat-card"><div class="stat-top"><span>Clientes</span><span class="stat-icon orange" aria-hidden="true">♙</span></div><strong id="dashboardClients">0</strong><small>Clientes cadastrados</small></article>
+            <article class="stat-card"><div class="stat-top"><span>Próximos do vencimento</span><span class="stat-icon orange" aria-hidden="true">◷</span></div><strong id="dashboardExpiring">0</strong><small>Produtos vencendo nos próximos 3 meses</small></article>
           </div>
         </section>
 
@@ -58,23 +60,33 @@
           <div class="scan-copy">
             <span class="scan-kicker"><span class="live-dot"></span> LEITURA DE ESTOQUE</span>
             <h2 id="scanTitle">Bipe um código de barras</h2>
-            <p>Leia um EAN para identificar um produto ou uma caixa master.</p>
+            <p>Escolha o tipo de leitura e bipe o código correspondente.</p>
+            <div class="scan-type-options" role="radiogroup" aria-label="Tipo de leitura">
+              <label><input type="radio" name="scanType" value="unit" checked> Unitário</label>
+              <label><input type="radio" name="scanType" value="master"> Caixa Master</label>
+            </div>
+            <div class="scan-type-options operation-options" role="radiogroup" aria-label="Operação">
+              <label><input type="radio" name="scanOperation" value="entrada" checked> Entrada</label>
+              <label><input type="radio" name="scanOperation" value="saida"> Saída / Expedição</label>
+            </div>
+            <button type="button" class="secondary-button audit-open-button" id="auditOpen">Consulta rápida / Auditoria de EAN</button>
             <form id="scanForm" class="scan-form" autocomplete="off">
               <span class="barcode-icon" aria-hidden="true">▥</span>
-              <input id="eanInput" type="text" inputmode="numeric" placeholder="Aguardando leitura do EAN…" aria-label="Código EAN" autofocus />
-              <button type="button" class="camera-button" id="cameraOpen">Câmera <span>▣</span></button>
-              <button type="submit" class="scan-button">Registrar leitura <span>↗</span></button>
+              <input id="eanInput" type="text" inputmode="numeric" placeholder="Aguardando leitura do EAN…" aria-label="Código EAN" />
+              <button type="button" class="camera-button" id="cameraOpen">Câmera <span aria-hidden="true">▣</span></button>
+              <button type="submit" class="scan-button">Registrar leitura <span aria-hidden="true">↗</span></button>
             </form>
             <p class="scan-hint">Conecte o leitor e bipe o código. Também é possível digitar o EAN e pressionar Enter.</p>
             <div id="scanMessage" class="scan-message" role="status" aria-live="polite"></div>
+            <div class="feedback-options"><label><input id="soundFeedback" type="checkbox"> Som ao bipar</label><label><input id="vibrationFeedback" type="checkbox"> Vibrar ao bipar</label></div>
           </div>
           <div class="scan-illustration" aria-hidden="true"><div class="scanner-rays"></div><div class="scanner-box"><span>▥</span></div><span class="illustration-spark spark-one">✦</span><span class="illustration-spark spark-two">✳</span></div>
         </section>
 
         <section class="stats-grid" aria-label="Resumo do estoque">
-          <article class="stat-card"><div class="stat-top"><span>Unidades em estoque</span><span class="stat-icon purple">▦</span></div><strong id="totalUnits">0</strong><small>Inclui unidades e caixas master</small></article>
-          <article class="stat-card"><div class="stat-top"><span>Produtos cadastrados</span><span class="stat-icon blue">◇</span></div><strong id="productCount">0</strong><small>EANs de produtos unitários</small></article>
-          <article class="stat-card"><div class="stat-top"><span>Caixas master</span><span class="stat-icon orange">▣</span></div><strong id="masterCount">0</strong><small>Modelos de caixa vinculados</small></article>
+          <article class="stat-card"><div class="stat-top"><span>Unidades em estoque</span><span class="stat-icon purple" aria-hidden="true">▦</span></div><strong id="totalUnits">0</strong><small>Inclui unidades e caixas master</small></article>
+          <article class="stat-card"><div class="stat-top"><span>Produtos cadastrados</span><span class="stat-icon blue" aria-hidden="true">◇</span></div><strong id="productCount">0</strong><small>EANs de produtos unitários</small></article>
+          <article class="stat-card"><div class="stat-top"><span>Caixas master</span><span class="stat-icon orange" aria-hidden="true">▣</span></div><strong id="masterCount">0</strong><small>Modelos de caixa vinculados</small></article>
         </section>
 
         </section>
@@ -82,6 +94,20 @@
         <section class="page-view movement-view" id="movimentacaoView" hidden>
           <div class="section-heading"><div><p class="eyebrow">ORGANIZAÇÃO DO ARMAZÉM</p><h2>Movimentação</h2></div></div>
           <div id="movementContent"></div>
+        </section>
+
+        <section class="page-view export-view" id="exportarView" hidden>
+          <div class="section-heading"><div><p class="eyebrow">DADOS DO INVENTÁRIO</p><h2>Exportar Inventário</h2></div></div>
+          <div class="export-controls">
+            <div class="form-group"><label for="exportClient">Cliente</label><select id="exportClient"><option value="">Selecione um cliente</option></select></div>
+            <div class="backup-controls"><button class="secondary-button" id="backupExportButton" type="button">Backup JSON</button><label class="secondary-button file-button" for="backupImportFile">Restaurar JSON</label><input id="backupImportFile" type="file" accept="application/json,.json" hidden><span id="backupMessage" class="backup-message" aria-live="polite"></span></div>
+          </div>
+          <div class="export-table-wrap">
+            <div class="export-table-heading"><strong id="exportTableTitle">Selecione um cliente para visualizar os produtos</strong><div class="export-actions"><button class="secondary-button" id="historyCsvButton" type="button">Exportar histórico CSV</button><button class="primary-button" id="exportCsvButton" type="button" disabled>Exportar CSV</button></div></div>
+            <div class="table-wrap"><table><thead><tr><th>PRODUTO</th><th>SKU</th><th>EAN UNITÁRIO</th><th>LOCALIZAÇÃO</th><th>VALIDADE</th><th>QUANTIDADE</th><th>CAIXAS MASTER</th></tr></thead><tbody id="exportProductRows"></tbody></table>
+              <div id="exportEmptyState" class="empty-state"><span class="empty-icon" aria-hidden="true">⇩</span><strong>Nenhum produto para exibir</strong><p>Selecione um cliente com produtos cadastrados.</p></div>
+            </div>
+          </div>
         </section>
 
         <section class="page-view statistics-view" id="estatisticasView" hidden>
@@ -96,7 +122,7 @@
 
         <section class="page-view management-view" id="gestaoView" hidden>
           <div class="section-heading"><div><p class="eyebrow">ADMINISTRAÇÃO</p><h2>Gestão de usuários</h2></div></div>
-          <form class="user-form" id="userForm">
+          <p class="view-intro">Crie e convide contas em Authentication → Users no Supabase. Toda conta nova recebe perfil Operador; promova administradores na tabela profiles com acesso restrito ao administrador principal.</p><form class="user-form" id="userForm" hidden>
             <div class="form-row"><div class="form-group"><label for="userName">Nome do colaborador *</label><input id="userName" maxlength="100" required></div><div class="form-group"><label for="newLogin">Login *</label><input id="newLogin" maxlength="60" autocomplete="off" required></div></div>
             <div class="form-row"><div class="form-group"><label for="newPassword">Senha *</label><input id="newPassword" type="password" minlength="4" autocomplete="new-password" required></div><div class="form-group"><label for="userRole">Perfil *</label><select id="userRole" required><option value="user">Operador</option><option value="admin">Administrador</option></select></div></div>
             <div class="form-row"><div class="form-group"><label for="userPhone">Telefone</label><input id="userPhone" type="tel" maxlength="30"></div><div class="form-group"><label for="userEmail">E-mail</label><input id="userEmail" type="email" maxlength="120"></div></div>
@@ -107,14 +133,18 @@
 
         <section class="page-view inventory-section" id="estoqueView" hidden>
           <div class="section-heading"><div><p class="eyebrow">ACOMPANHAMENTO</p><h2>Estoque</h2></div><span class="table-count" id="tableCount">0 produtos</span></div>
-          <form class="inventory-search" id="inventorySearchForm" autocomplete="off"><span class="barcode-icon" aria-hidden="true">▥</span><input id="inventoryEan" inputmode="numeric" placeholder="Bipe ou digite um EAN para filtrar o estoque" aria-label="Filtrar estoque por EAN"><button class="secondary-button" type="submit">Filtrar</button><button class="secondary-button" id="clearInventoryFilter" type="button">Limpar</button></form>
+          <form class="inventory-search" id="inventorySearchForm" autocomplete="off"><span class="barcode-icon" aria-hidden="true">▥</span><input id="inventoryEan" type="search" placeholder="Busque por EAN, SKU, produto ou cliente" aria-label="Filtrar estoque por EAN"><button class="secondary-button inventory-camera-button" id="inventoryCameraOpen" type="button" aria-label="Buscar código pela câmera">Câmera ▣</button><button class="secondary-button" type="submit">Filtrar</button><button class="secondary-button" id="clearInventoryFilter" type="button">Limpar</button></form>
+          <div class="inventory-quick-filters" aria-label="Filtros adicionais">
+            <div class="form-group"><label for="inventoryClientFilter">Cliente</label><select id="inventoryClientFilter"><option value="">Todos os clientes</option></select></div>
+            <div class="form-group"><label for="inventoryStatusFilter">Status</label><select id="inventoryStatusFilter"><option value="all">Todos</option><option value="stock">Em estoque</option><option value="zero">Estoque zerado</option><option value="expiring30">Vencendo em até 30 dias</option><option value="expiring90">Vencendo em até 90 dias</option><option value="expired">Vencidos</option></select></div>
+          </div>
           <p class="inventory-filter-status" id="inventoryFilterStatus" aria-live="polite"></p>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>PRODUTO</th><th>SKU</th><th>EAN UNITÁRIO</th><th>CLIENTE</th><th>LOCALIZAÇÃO</th><th>VALIDADE</th><th class="quantity-heading">QUANTIDADE</th><th>AÇÃO</th></tr></thead>
+              <thead><tr><th>PRODUTO</th><th>SKU</th><th>EAN UNITÁRIO</th><th>CLIENTE</th><th>LOCALIZAÇÃO</th><th>VALIDADE / STATUS</th><th>LOTES</th><th class="quantity-heading">QUANTIDADE</th><th>AÇÃO</th></tr></thead>
               <tbody id="productRows"></tbody>
             </table>
-            <div id="emptyState" class="empty-state"><span class="empty-icon">▤</span><strong>Nenhum produto no inventário</strong><p>Comece bipando um EAN para cadastrar seu primeiro produto.</p></div>
+            <div id="emptyState" class="empty-state"><span class="empty-icon" aria-hidden="true">▤</span><strong>Nenhum produto no inventário</strong><p>Comece bipando um EAN para cadastrar seu primeiro produto.</p></div>
           </div>
         </section>
         <footer>Lumina - Smart Storage <span>•</span> Os dados ficam salvos neste navegador</footer>
@@ -141,6 +171,8 @@
         <div id="modalBody"></div>
       </section>
     </div>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="supabase.js"></script>
     <script src="script.js"></script>
   </body>
 </html>

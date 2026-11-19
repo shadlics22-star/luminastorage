@@ -1,642 +1,113 @@
-const STORAGE_KEY = 'cd-inventory-v1';
-const USERS_KEY = 'lumina-users-v1';
-const SESSION_KEY = 'lumina-session-v1';
-const SCANS_KEY = 'lumina-scan-history-v1';
-const products = loadProducts();
-let scanHistory = loadScanHistory();
-let users = loadUsers();
-let currentUser = null;
-let inventoryFilter = '';
-const scanForm = document.getElementById('scanForm');
-const eanInput = document.getElementById('eanInput');
-const modalBackdrop = document.getElementById('modalBackdrop');
-const modalBody = document.getElementById('modalBody');
-const scanMessage = document.getElementById('scanMessage');
-const cameraBackdrop = document.getElementById('cameraBackdrop');
-const cameraVideo = document.getElementById('cameraVideo');
-const cameraStatus = document.getElementById('cameraStatus');
-let pendingEan = '';
-let pendingScan = null;
-let cameraStream = null;
-let barcodeDetector = null;
-let cameraActive = false;
-let cameraScanPending = false;
-let cameraTarget = 'scan';
+const STORAGE_KEY='cd-inventory-v1',USERS_KEY='lumina-users-v1',SESSION_KEY='lumina-session-v1',SCANS_KEY='lumina-scan-history-v1',CONFERENCE_MEMORY_KEY='lumina-conference-memory-v1';
+const storage={get:(key,fallback=null)=>{try{return localStorage.getItem(key)??fallback}catch{return fallback}},set:(key,value)=>{try{localStorage.setItem(key,value)}catch(error){console.warn('Não foi possível salvar os dados localmente.',error)}},remove:key=>{try{localStorage.removeItem(key)}catch{}}};
+function conferenceMemory(){try{return JSON.parse(storage.get(CONFERENCE_MEMORY_KEY,'{}'))||{}}catch{return{}}}
+function rememberConference({lot,location,client='',ean=''}){const memory=conferenceMemory(),scope=client||ean||'default';memory[scope]={lot:lot??memory[scope]?.lot??'',location:location??memory[scope]?.location??''};memory.default={lot:memory[scope].lot,location:memory[scope].location};storage.set(CONFERENCE_MEMORY_KEY,JSON.stringify(memory))}
+function remembered(field,client='',ean=''){const memory=conferenceMemory(),entry=memory[client||ean||'default']||memory.default||{};return entry[field]||''}
+function dateStatus(value){if(!value)return'';const [y,m,d]=value.split('-').map(Number),date=new Date(y,m-1,d);date.setHours(0,0,0,0);const today=new Date();today.setHours(0,0,0,0);if(date<today)return'expired';const days=Math.ceil((date-today)/86400000);return days<=90?'expiring':''}
+function productHasStatus(product,status){const dates=(product.lots||[]).map(lot=>lot.expirationDate).filter(Boolean);if(!dates.length&&product.expirationDate)dates.push(product.expirationDate);return dates.some(date=>dateStatus(date)===status)}
+function scanOperation(){return document.querySelector('input[name="scanOperation"]:checked')?.value||'entrada'}
 
-function loadProducts() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    return Array.isArray(saved) ? saved.map(product => ({
-      ...product,
-      quantity: Number(product.quantity) || 0,
-      masters: Array.isArray(product.masters) ? product.masters : [],
-      location: product.location || '',
-      expirationDate: product.expirationDate || ''
-    })) : [];
-  } catch {
-    return [];
-  }
+const products=loadProducts();let scanHistory=loadScanHistory();let users=loadUsers();let currentUser=null;let inventoryFilter='';let selectedMovementClient=null;let pendingEan='',pendingScan=null,cameraStream=null,barcodeDetector=null,cameraActive=false,cameraScanPending=false,cameraTarget='scan',cameraRequestId=0,cameraZxingReader=null;
+const $=id=>document.getElementById(id),scanForm=$('scanForm'),eanInput=$('eanInput'),modalBackdrop=$('modalBackdrop'),modalBody=$('modalBody'),scanMessage=$('scanMessage'),cameraBackdrop=$('cameraBackdrop'),cameraVideo=$('cameraVideo'),cameraStatus=$('cameraStatus');
+function loadProducts(){try{const data=JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');return Array.isArray(data)?data.map(p=>({...p,quantity:Number(p.quantity)||0,masters:Array.isArray(p.masters)?p.masters:[],lots:Array.isArray(p.lots)?p.lots:[],weightMl:p.weightMl||'',location:p.location||'',expirationDate:p.expirationDate||''})):[]}catch{return[]}}
+function saveProducts(){storage.set(STORAGE_KEY,JSON.stringify(products));if(isAdmin()&&window.luminaDb)syncProductsToCloud().catch(e=>console.error('Falha ao sincronizar produtos:',e))}
+function loadUsers(){try{const data=JSON.parse(localStorage.getItem(USERS_KEY)||'null');if(Array.isArray(data)&&data.length)return data}catch{}return[{name:'Administrador',login:'admin',password:'admin',phone:'',email:'',role:'admin'}]}
+function saveUsers(){if(!isAdmin())return;storage.set(USERS_KEY,JSON.stringify(users))}
+async function hashPassword(password){if(!globalThis.crypto?.subtle)throw Error('A criptografia segura não está disponível neste navegador.');const result=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(password));return Array.from(new Uint8Array(result),b=>b.toString(16).padStart(2,'0')).join('')}
+async function migrateUserPasswords(){let changed=false;for(const user of users){if(!user.passwordHash&&typeof user.password==='string'){user.passwordHash=await hashPassword(user.password);delete user.password;changed=true}}if(changed||!localStorage.getItem(USERS_KEY))saveUsers()}
+function loadScanHistory(){try{const data=JSON.parse(localStorage.getItem(SCANS_KEY)||'[]');return Array.isArray(data)?data.filter(x=>x&&x.login&&x.timestamp):[]}catch{return[]}}
+function saveScanHistory(){storage.set(SCANS_KEY,JSON.stringify(scanHistory));if(isAdmin()&&window.luminaDb){const item=scanHistory[scanHistory.length-1];if(item)window.luminaDb.from('lumina_movements').insert({product_ean:item.productEan,movement_data:item,user_id:currentUser.id}).then(({error})=>{if(error)console.error('Falha ao sincronizar movimentação:',error)})}}
+function isAdmin(){return currentUser?.role==='admin'}
+function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function cleanEan(value){return value.trim().replace(/\s+/g,'')}
+function findProductByEan(ean){return products.find(p=>p.ean===ean||p.masters.some(m=>m.ean===ean))}
+function formatDate(value){if(!value)return'';const [y,m,d]=value.split('-').map(Number);return new Intl.DateTimeFormat('pt-BR').format(new Date(y,m-1,d))}
+function registerScan(product,quantity,type='entrada'){if(!currentUser)return;scanHistory.push({login:currentUser.login,operatorName:currentUser.name,productEan:product.ean,productName:product.description,client:product.client,quantity,type,timestamp:new Date().toISOString()});saveScanHistory()}
+function enterApp(user){currentUser=user;sessionStorage.setItem(SESSION_KEY,user.login||user.email);$('loginScreen').hidden=true;$('appShell').hidden=false;$('signedInUser').textContent=user.name+(isAdmin()?' · Administrador':' · Operador');document.querySelectorAll('.admin-only').forEach(el=>el.hidden=!isAdmin());document.querySelectorAll('[data-view=conferencia],[data-view=movimentacao],[data-view=exportar]').forEach(el=>el.hidden=!isAdmin());renderInventory();renderDashboard();if(!isAdmin())showView('estoque')}
+const viewSections={dashboard:$('dashboardView'),conferencia:$('conferenciaView'),movimentacao:$('movimentacaoView'),estoque:$('estoqueView'),gestao:$('gestaoView'),estatisticas:$('estatisticasView'),exportar:$('exportarView')};
+function showView(name){Object.entries(viewSections).forEach(([key,section])=>section.hidden=key!==name);document.querySelectorAll('.nav-item[data-view]').forEach(link=>link.classList.toggle('active',link.dataset.view===name));if(name==='estoque')renderInventory();if(name==='movimentacao')renderMovement();if(name==='dashboard')renderDashboard();if(name==='gestao'&&isAdmin())renderUsers();if(name==='estatisticas')renderStatistics();if(name==='exportar')renderInventoryExport();if(name==='conferencia')setTimeout(()=>eanInput.focus(),0)}
+function renderDashboard(){const clients=new Set(products.map(p=>p.client).filter(Boolean));const today=new Date();today.setHours(0,0,0,0);const limit=new Date(today);limit.setMonth(limit.getMonth()+3);const expiring=products.filter(p=>{if(!p.expirationDate)return false;const [y,m,d]=p.expirationDate.split('-').map(Number),date=new Date(y,m-1,d);return date>=today&&date<=limit}).length;$('dashboardUnits').textContent=products.length.toLocaleString('pt-BR');$('dashboardMasters').textContent=products.reduce((n,p)=>n+p.masters.length,0).toLocaleString('pt-BR');$('dashboardClients').textContent=clients.size.toLocaleString('pt-BR');$('dashboardExpiring').textContent=expiring.toLocaleString('pt-BR')}
+function renderInventory(){const clientSelect=$('inventoryClientFilter');if(clientSelect){const selected=clientSelect.value,clients=[...new Set(products.map(p=>p.client).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));clientSelect.innerHTML='<option value="">Todos os clientes</option>'+clients.map(c=>`<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');if(clients.includes(selected))clientSelect.value=selected}const query=inventoryFilter.toLocaleLowerCase('pt-BR'),clientFilter=$('inventoryClientFilter')?.value||'',statusFilter=$('inventoryStatusFilter')?.value||'all';const visible=products.filter(p=>{if(clientFilter&&p.client!==clientFilter)return false;if(query&&![p.ean,p.sku,p.description,p.client,...p.masters.map(m=>m.ean)].some(value=>String(value||'').toLocaleLowerCase('pt-BR').includes(query)))return false;if(statusFilter==='stock'&&p.quantity<=0)return false;if(statusFilter==='zero'&&p.quantity>0)return false;if(statusFilter==='expired'&&!productHasStatus(p,'expired'))return false;if(statusFilter==='expiring30'&&!((p.lots||[]).some(l=>l.expirationDate&&dateStatus(l.expirationDate)==='expiring'&&(new Date(l.expirationDate+'T00:00:00')-new Date(new Date().toDateString()))/86400000<=30)||(!p.lots?.length&&p.expirationDate&&dateStatus(p.expirationDate)==='expiring'&&(new Date(p.expirationDate+'T00:00:00')-new Date(new Date().toDateString()))/86400000<=30)))return false;if(statusFilter==='expiring90'&&!productHasStatus(p,'expiring'))return false;return true});$('inventoryFilterStatus').textContent=[inventoryFilter?`Busca: ${inventoryFilter}`:'',clientFilter?`Cliente: ${clientFilter}`:'',statusFilter!=='all'?`Status: ${$('inventoryStatusFilter').selectedOptions[0].textContent}`:''].filter(Boolean).join(' · ')||'';$('inventoryEan').value=inventoryFilter;$('totalUnits').textContent=products.reduce((n,p)=>n+p.quantity,0).toLocaleString('pt-BR');$('productCount').textContent=products.length.toLocaleString('pt-BR');$('masterCount').textContent=products.reduce((n,p)=>n+p.masters.length,0).toLocaleString('pt-BR');$('tableCount').textContent=`${visible.length} ${visible.length===1?'produto':'produtos'}`;$('emptyState').hidden=visible.length>0;$('emptyState').querySelector('strong').textContent=inventoryFilter?'Nenhum produto encontrado':'Nenhum produto no inventário';$('emptyState').querySelector('p').textContent=inventoryFilter?'Tente buscar por EAN, SKU, descrição ou cliente.':'Comece bipando um EAN para cadastrar seu primeiro produto.';$('productRows').innerHTML=visible.map(p=>{const lots=(p.lots||[]).map(l=>`${escapeHtml(l.lot||'—')} · ${escapeHtml(formatDate(l.expirationDate)||'—')} · ${escapeHtml(l.location||p.location||'—')} · ${Number(l.quantity)||0} un.`).join('<br>'),status=p.lots?.length?p.lots.map(l=>dateStatus(l.expirationDate)).find(s=>s==='expired')||p.lots.map(l=>dateStatus(l.expirationDate)).find(s=>s==='expiring'):dateStatus(p.expirationDate),badge=status==='expired'?'<span class="expiry-badge expired-badge">Vencido</span>':status==='expiring'?'<span class="expiry-badge expiring-badge">Próximo do vencimento</span>':'';return`<tr class="${p.quantity<=0?'stock-zero':''}"><td><span class="product-name">${escapeHtml(p.description)}</span><span class="product-sub">${p.masters.length} ${p.masters.length===1?'caixa master':'caixas master'}</span></td><td><span class="sku-pill">${escapeHtml(p.sku||'—')}</span></td><td><span class="ean-text">${escapeHtml(p.ean)}</span></td><td>${escapeHtml(p.client)}</td><td>${escapeHtml(p.location||'Não definida')}</td><td>${escapeHtml(formatDate(p.expirationDate)||'—')} ${badge}</td><td class="lot-cell">${lots||'—'}</td><td class="quantity-cell">${p.quantity.toLocaleString('pt-BR')} un.</td><td class="row-actions"><button type="button" class="remove-unit-button" data-remove-ean="${escapeHtml(p.ean)}" ${p.quantity<=0?'disabled':''} aria-label="Remover uma unidade de ${escapeHtml(p.description)}">−1 un.</button><button type="button" class="edit-product-button" data-edit-ean="${escapeHtml(p.ean)}">Editar</button><button type="button" class="edit-product-button" data-audit-ean="${escapeHtml(p.ean)}">Auditar</button><button type="button" class="edit-product-button" data-label-ean="${escapeHtml(p.ean)}">Etiqueta</button></td></tr>`}).join('');if(!isAdmin())$('productRows').querySelectorAll('.row-actions').forEach(cell=>{cell.querySelectorAll('[data-edit-ean],[data-remove-ean]').forEach(b=>b.remove())});$('productRows').querySelectorAll('[data-edit-ean]').forEach(b=>b.addEventListener('click',()=>openProductEditor(b.dataset.editEan)));$('productRows').querySelectorAll('[data-audit-ean]').forEach(b=>b.addEventListener('click',()=>openAudit(b.dataset.auditEan)));$('productRows').querySelectorAll('[data-label-ean]').forEach(b=>b.addEventListener('click',()=>openLabel(b.dataset.labelEan)));$('productRows').querySelectorAll('[data-remove-ean]').forEach(b=>b.addEventListener('click',()=>{const p=products.find(x=>x.ean===b.dataset.removeEan);if(!p||p.quantity<=0)return;const lot=p.lots?.find(l=>Number(l.quantity)>0);if(lot){lot.quantity--;lot.quantity=Math.max(0,lot.quantity)}p.quantity--;registerScan(p,1,'saida');saveProducts();renderInventory();renderDashboard()}))}
+function renderInventoryExport(){const select=$('exportClient'),previous=select.value,clients=[...new Set(products.map(p=>p.client).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));select.innerHTML='<option value="">Selecione um cliente</option>'+clients.map(c=>`<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');if(clients.includes(previous))select.value=previous;const client=select.value,list=client?products.filter(p=>p.client===client):[];$('exportProductRows').innerHTML=list.map(p=>`<tr><td><span class="product-name">${escapeHtml(p.description)}</span></td><td>${escapeHtml(p.sku||'—')}</td><td>${escapeHtml(p.ean)}</td><td>${escapeHtml(p.location||'Não definida')}</td><td>${escapeHtml(formatDate(p.expirationDate)||'—')}</td><td>${p.quantity.toLocaleString('pt-BR')} un.</td><td>${p.masters.length?p.masters.map(m=>escapeHtml(m.ean)).join(', '):'—'}</td></tr>`).join('');$('exportTableTitle').textContent=client?`${client} · ${list.length} ${list.length===1?'produto':'produtos'}`:'Selecione um cliente para visualizar os produtos';$('exportEmptyState').hidden=list.length>0;$('exportEmptyState').querySelector('strong').textContent=client?'Nenhum produto cadastrado para este cliente':'Nenhum produto para exibir';$('exportEmptyState').querySelector('p').textContent=client?'Cadastre produtos vinculados a este cliente para exportar o inventário.':'Selecione um cliente com produtos cadastrados.';$('exportCsvButton').disabled=list.length===0}
+function downloadBlob(blob,filename){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)}
+function csvCell(value){return `"${String(value??'').replace(/"/g,'""')}"`}
+function exportInventoryCsv(){const client=$('exportClient').value;if(!client)return;const list=products.filter(p=>p.client===client);if(!list.length)return;const rows=[['Cliente','Produto','SKU','EAN unitário','Localização','Validade','Quantidade','EANs das caixas master'],...list.map(p=>[client,p.description,p.sku||'',p.ean,p.location||'',p.expirationDate?formatDate(p.expirationDate):'',p.quantity,p.masters.map(m=>m.ean).join(', ')])];const content=rows.map(row=>row.map(csvCell).join(';')).join('\r\n'),safe=client.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9_-]+/g,'-').replace(/^-|-$/g,'')||'cliente';downloadBlob(new Blob(['\uFEFF',content],{type:'text/csv;charset=utf-8'}),`inventario-${safe}.csv`)}
+function exportHistoryCsv(){const rows=[['Data','Operação','Operador','Login','Cliente','Produto','EAN','Quantidade'],...scanHistory.map(s=>[new Date(s.timestamp).toLocaleString('pt-BR'),s.type||'entrada',s.operatorName||'',s.login||'',s.client||'',s.productName||'',s.productEan||'',s.quantity||0])];downloadBlob(new Blob(['\uFEFF',rows.map(r=>r.map(csvCell).join(';')).join('\r\n')],{type:'text/csv;charset=utf-8'}),'lumina-historico.csv')}
+function exportBackupJson(){downloadBlob(new Blob([JSON.stringify({format:'lumina-backup',version:1,exportedAt:new Date().toISOString(),products,scanHistory},null,2)],{type:'application/json'}),'lumina-backup.json')}
+async function importBackupJson(event){const file=event.target.files?.[0];if(!file)return;const status=$('backupMessage');const finish=()=>{event.target.value=''};file.text().then(text=>{const data=JSON.parse(text);if(data?.format!=='lumina-backup'||!Array.isArray(data.products)||!Array.isArray(data.scanHistory))throw Error('Arquivo de backup inválido.');const imported=data.products.map(p=>{if(!p||typeof p.ean!=='string'||typeof p.description!=='string'||typeof p.client!=='string')throw Error('O backup contém produtos inválidos.');const quantity=Number(p.quantity);if(!Number.isSafeInteger(quantity)||quantity<0)throw Error('Quantidade inválida no backup.');return{...p,quantity,masters:Array.isArray(p.masters)?p.masters:[],lots:Array.isArray(p.lots)?p.lots:[],location:p.location||'',expirationDate:p.expirationDate||''}});showModal({eyebrow:'RESTAURAR BACKUP',title:'Confirmar restauração',description:`O backup contém ${imported.length} produto(s). Os dados atuais serão substituídos.`,content:'<p class="inline-error" id="restoreError"></p><div class="modal-actions"><button class="secondary-button" id="cancelRestore" type="button">Cancelar</button><button class="primary-button" id="confirmRestore" type="button">Restaurar dados</button></div>'});$('cancelRestore').addEventListener('click',()=>{closeModal();finish()});$('confirmRestore').addEventListener('click',()=>{products.splice(0,products.length,...imported);scanHistory=data.scanHistory.filter(s=>s&&s.timestamp&&s.productEan);saveProducts();saveScanHistory();renderInventory();renderDashboard();renderMovement();renderInventoryExport();renderStatistics();closeModal();if(status)status.textContent='Backup restaurado com sucesso.';finish()})}).catch(error=>{if(status)status.textContent=error.message||'Não foi possível restaurar o arquivo.';finish()})}
+function renderMovement(){const content=$('movementContent'),clients=[...new Set(products.map(p=>p.client).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));if(!selectedMovementClient||!clients.includes(selectedMovementClient)){selectedMovementClient=null;content.innerHTML=clients.length?`<p class="view-intro">Selecione um cliente para consultar e atualizar as localizações dos produtos.</p><div class="client-grid">${clients.map(c=>`<button type="button" class="client-card" data-client="${escapeHtml(c)}"><span class="client-avatar">${escapeHtml(c.charAt(0).toUpperCase())}</span><span><strong>${escapeHtml(c)}</strong><small>${products.filter(p=>p.client===c).length} produtos</small></span><span class="client-arrow">›</span></button>`).join('')}</div>`:'<div class="empty-state"><span class="empty-icon" aria-hidden="true">⇄</span><strong>Nenhum cliente cadastrado</strong><p>Cadastre produtos na tela Conferência para começar.</p></div>';content.querySelectorAll('[data-client]').forEach(b=>b.addEventListener('click',()=>{selectedMovementClient=b.dataset.client;renderMovement()}));return}const list=products.filter(p=>p.client===selectedMovementClient);content.innerHTML=`<button type="button" class="back-button" id="movementBack">← Todos os clientes</button><p class="view-intro">Atualize a localização do produto. A alteração será salva automaticamente.</p><div class="movement-product-list">${list.map(p=>`<article class="movement-product"><div class="movement-product-info"><strong>${escapeHtml(p.description)}</strong><small>SKU ${escapeHtml(p.sku||'—')} · EAN ${escapeHtml(p.ean)}</small></div><label>Localização<input class="location-input" data-location-ean="${escapeHtml(p.ean)}" maxlength="80" value="${escapeHtml(p.location||'')}" placeholder="Ex.: Rua A, Prateleira 02"></label></article>`).join('')}</div>`;$('movementBack').addEventListener('click',()=>{selectedMovementClient=null;renderMovement()});content.querySelectorAll('[data-location-ean]').forEach(input=>input.addEventListener('change',()=>{const p=products.find(x=>x.ean===input.dataset.locationEan);if(!p)return;p.location=input.value.trim();saveProducts();selectedMovementClient=p.client;renderMovement()}))}
+function showModal({eyebrow,title,description,icon='＋',content}){$('modalEyebrow').textContent=eyebrow;$('modalTitle').textContent=title;$('modalDescription').textContent=description;$('modalIcon').textContent=icon;modalBody.innerHTML=content;modalBackdrop.classList.remove('hidden');const defaults={masterLot:remembered('lot'),unitLot:remembered('lot'),newUnitLot:remembered('lot'),newMasterLot:remembered('lot'),masterLocation:remembered('location'),newUnitLocation:remembered('location'),newMasterLocation:remembered('location'),scanLocation:remembered('location')};Object.entries(defaults).forEach(([id,value])=>{const input=$(id);if(input&&!input.value&&value)input.value=value});const focus=modalBody.querySelector('input:not([readonly]),select');if(focus)setTimeout(()=>focus.focus(),40)}
+function closeModal(){modalBackdrop.classList.add('hidden');pendingEan='';pendingScan=null;setTimeout(()=>{if(!$('conferenciaView').hidden)eanInput.focus()},30)}
+function showMessage(text,error=false){scanMessage.textContent=text;scanMessage.classList.toggle('error',error);clearTimeout(showMessage.timer);showMessage.timer=setTimeout(()=>scanMessage.textContent='',6000)}
+function playScanFeedback(){if(localStorage.getItem('lumina-sound')==='true'&&window.AudioContext){try{const ctx=new AudioContext(),osc=ctx.createOscillator(),gain=ctx.createGain();osc.frequency.value=880;gain.gain.value=.08;osc.connect(gain);gain.connect(ctx.destination);osc.start();osc.stop(ctx.currentTime+.12);osc.onended=()=>ctx.close()}catch{}}if(localStorage.getItem('lumina-vibration')==='true'&&navigator.vibrate)navigator.vibrate(80)}
+function promptScanDetails(ean){if(!isAdmin())return;const product=findProductByEan(ean);pendingEan=ean;showModal({eyebrow:'DADOS DA LEITURA',title:'Informe endereço e quantidade',description:'Confirme o endereço e a quantidade bipada. Para uma caixa master, informe o número de caixas.',icon:'↗',content:`<form id="scanDetailsForm"><div class="form-group"><label for="scanLocation">Endereço *</label><input id="scanLocation" maxlength="80" value="${escapeHtml(product?.location||'')}" placeholder="Ex.: Rua A, Prateleira 02" required></div><div class="form-group"><label for="scanQuantity">Quantidade bipada *</label><input id="scanQuantity" type="number" min="1" step="1" value="1" required></div><div class="form-group"><label for="scanExpiration">Data de validade</label><input id="scanExpiration" type="date" value="${escapeHtml(product?.expirationDate||'')}"></div><div class="inline-error" id="scanDetailsError"></div><div class="modal-actions"><button class="primary-button" type="submit">Continuar</button></div></form>`});$('scanDetailsForm').addEventListener('submit',event=>{event.preventDefault();const quantity=Number($('scanQuantity').value),location=$('scanLocation').value.trim(),error=$('scanDetailsError');if(!location){error.textContent='Informe o endereço do produto.';return}if(!Number.isSafeInteger(quantity)||quantity<1){error.textContent='Informe uma quantidade inteira maior que zero.';return}pendingScan={ean,location,quantity,expirationDate:$('scanExpiration').value};const existing=findProductByEan(ean);if(existing){const isUnit=existing.ean===ean,amount=isUnit?quantity:existing.masters.find(m=>m.ean===ean).unitsPerCase*quantity;existing.location=location;if(pendingScan.expirationDate)existing.expirationDate=pendingScan.expirationDate;existing.quantity+=amount;registerScan(existing,amount,isUnit?'entrada':'master');saveProducts();renderInventory();renderDashboard();playScanFeedback();closeModal();showMessage(`${isUnit?'Produto unitário':'Caixa master'} registrado: +${amount} unidade(s) de ${existing.description}.`);return}showTypeChoice(ean)})}
+function showTypeChoice(ean){pendingEan=ean;showModal({eyebrow:'EAN NÃO CADASTRADO',title:'Que tipo de código é este?',description:`O código ${ean} ainda não está no inventário. Identifique o tipo para continuar.`,icon:'?',content:'<button type="button" class="choice-card" data-choice="unit"><span class="choice-symbol" aria-hidden="true">▥</span><span><strong>Produto unitário</strong><small>Cadastrar SKU, descrição e cliente.</small></span></button><button type="button" class="choice-card" data-choice="master"><span class="choice-symbol" aria-hidden="true">▣</span><span><strong>Caixa master</strong><small>Vincular a um produto e informar unidades por caixa.</small></span></button>'});modalBody.querySelectorAll('[data-choice]').forEach(card=>card.addEventListener('click',()=>card.dataset.choice==='unit'?showUnitForm(ean):showMasterForm(ean)))}
+function showUnitForm(ean){pendingEan=ean;const clients=[...new Set(products.map(p=>p.client).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));showModal({eyebrow:'CADASTRO DE PRODUTO',title:'Novo produto unitário',description:`Preencha os dados para cadastrar o EAN ${ean}.`,content:`<form id="unitForm"><div class="form-group"><label for="unitEan">EAN unitário</label><input id="unitEan" value="${escapeHtml(ean)}" readonly></div><div class="form-row"><div class="form-group"><label for="sku">SKU</label><input id="sku" maxlength="60" placeholder="Opcional"></div><div class="form-group"><label for="client">Cliente *</label><select id="client" required><option value="" disabled selected>Selecione um cliente</option>${clients.map(c=>`<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}<option value="__new__">Novo Cliente</option></select><input id="newClient" maxlength="80" placeholder="Digite o nome do cliente" hidden></div></div><div class="form-group"><label for="description">Descrição do produto *</label><input id="description" required maxlength="120" placeholder="Nome ou descrição"></div><p class="inline-error" id="unitError"></p><div class="modal-actions"><button class="primary-button" type="submit">Salvar produto</button></div></form>`});const select=$('client'),newClient=$('newClient');select.addEventListener('change',()=>{newClient.hidden=select.value!=='__new__';newClient.required=select.value==='__new__';if(!newClient.hidden)newClient.focus()});$('unitForm').addEventListener('submit',event=>{event.preventDefault();if(findProductByEan(ean)){$('unitError').textContent='Este EAN já está vinculado a um produto ou caixa master.';return}const client=select.value==='__new__'?newClient.value.trim():select.value;if(!client){$('unitError').textContent='Selecione ou informe um cliente.';return}const p={ean,sku:$('sku').value.trim(),description:$('description').value.trim(),client,location:pendingScan?.location||'',expirationDate:pendingScan?.expirationDate||'',quantity:pendingScan?.quantity||1,masters:[]};products.push(p);registerScan(p,p.quantity,'entrada');saveProducts();renderInventory();renderDashboard();playScanFeedback();closeModal();showMessage(`Produto cadastrado e ${p.quantity} unidade(s) adicionada(s) ao estoque.`)})}
+function showMasterForm(masterEan,unitEan=''){const match=unitEan?products.find(p=>p.ean===unitEan):null;showModal({eyebrow:'CADASTRO DE CAIXA',title:'Vincular caixa master',description:`Informe o EAN unitário já cadastrado e quantas unidades há na caixa ${masterEan}.`,icon:'▣',content:`<form id="masterForm"><div class="form-group"><label for="masterEan">EAN da caixa master</label><input id="masterEan" value="${escapeHtml(masterEan)}" readonly></div><div class="form-group"><label for="linkedEan">EAN do produto unitário *</label><div class="ean-entry"><input id="linkedEan" inputmode="numeric" value="${escapeHtml(unitEan)}" placeholder="Bipe ou digite o EAN unitário" required><button type="button" class="secondary-button" id="masterCameraOpen">Câmera</button></div></div><div id="linkedProduct" class="link-product" ${match?'':'hidden'}>${match?`<strong>${escapeHtml(match.description)}</strong>SKU ${escapeHtml(match.sku)} · ${escapeHtml(match.client)}`:''}</div><div class="form-group"><label for="caseQuantity">Unidades por caixa *</label><input id="caseQuantity" type="number" min="1" step="1" required placeholder="Ex.: 12"></div><p class="inline-error" id="masterError"></p><div class="modal-actions"><button type="button" class="secondary-button" id="cancelMaster">Voltar</button><button class="primary-button" type="submit">Vincular caixa</button></div></form>`});const linked=$('linkedEan');const update=()=>{const p=products.find(x=>x.ean===cleanEan(linked.value)),box=$('linkedProduct');if(!p){box.hidden=true;box.innerHTML='';return}box.hidden=false;box.innerHTML=`<strong>${escapeHtml(p.description)}</strong>SKU ${escapeHtml(p.sku||'—')} · ${escapeHtml(p.client)}`};linked.addEventListener('input',update);$('masterCameraOpen').addEventListener('click',()=>openCamera('master'));$('cancelMaster').addEventListener('click',()=>showTypeChoice(masterEan));$('masterForm').addEventListener('submit',event=>{event.preventDefault();const p=products.find(x=>x.ean===cleanEan(linked.value)),units=Number($('caseQuantity').value);if(!p){$('masterError').textContent='EAN unitário não cadastrado. Cadastre o produto antes de vinculá-lo.';return}if(findProductByEan(masterEan)){$('masterError').textContent='Este EAN já está vinculado a um produto ou caixa master.';return}if(!Number.isSafeInteger(units)||units<1){$('masterError').textContent='Informe uma quantidade inteira maior que zero.';return}const added=units*(pendingScan?.quantity||1);p.masters.push({ean:masterEan,unitsPerCase:units});p.location=pendingScan?.location||p.location;if(pendingScan?.expirationDate)p.expirationDate=pendingScan.expirationDate;p.quantity+=added;registerScan(p,added,'master');saveProducts();renderInventory();renderDashboard();playScanFeedback();closeModal();showMessage(`Caixa master vinculada: +${added} unidades de ${p.description}.`)})}
+function openProductEditor(ean){if(!isAdmin())return;const p=products.find(x=>x.ean===ean);if(!p)return;showModal({eyebrow:'EDIÇÃO DE ESTOQUE',title:'Editar produto',description:'Altere os dados, ajuste o estoque ou desvincule caixas master.',icon:'✎',content:`<form id="editProductForm"><div class="form-group"><label for="editDescription">Descrição *</label><input id="editDescription" maxlength="120" value="${escapeHtml(p.description)}" required></div><div class="form-row"><div class="form-group"><label for="editSku">SKU</label><input id="editSku" maxlength="60" value="${escapeHtml(p.sku||'')}"></div><div class="form-group"><label for="editClient">Cliente *</label><input id="editClient" maxlength="80" value="${escapeHtml(p.client)}" required></div></div><div class="form-row"><div class="form-group"><label for="editLocation">Localização</label><input id="editLocation" maxlength="80" value="${escapeHtml(p.location||'')}"></div><div class="form-group"><label for="editExpiration">Validade</label><input id="editExpiration" type="date" value="${escapeHtml(p.expirationDate||'')}"></div></div><div class="form-group"><label for="editQuantity">Quantidade em estoque *</label><input id="editQuantity" type="number" min="0" step="1" value="${p.quantity}" required></div><div class="form-group"><label>Caixas master vinculadas</label><div class="master-edit-list">${p.masters.length?p.masters.map(m=>`<label class="master-edit-item"><input type="checkbox" data-master-ean="${escapeHtml(m.ean)}"> Desvincular ${escapeHtml(m.ean)} (${m.unitsPerCase} un./caixa)</label>`).join(''):'<small>Nenhuma caixa master vinculada.</small>'}</div></div><div class="form-row"><div class="form-group"><label for="addMasterEan">Adicionar EAN master</label><input id="addMasterEan" inputmode="numeric" placeholder="EAN da caixa"></div><div class="form-group"><label for="addMasterUnits">Unidades por caixa</label><input id="addMasterUnits" type="number" min="1" step="1" placeholder="Ex.: 12"></div></div><p class="inline-error" id="editProductError"></p><div class="modal-actions"><button class="secondary-button danger-button" id="deleteProductButton" type="button">Excluir produto</button><button class="primary-button" type="submit">Salvar alterações</button></div></form>`});$('deleteProductButton').addEventListener('click',event=>{const button=event.currentTarget;if(button.dataset.confirm==='yes'){products.splice(products.indexOf(p),1);saveProducts();renderInventory();renderDashboard();renderMovement();renderInventoryExport();closeModal();return}button.dataset.confirm='yes';button.textContent='Confirmar exclusão';button.classList.add('danger-button');let notice=$('editProductError');notice.textContent=`Confirme: excluir ${p.description} e todos os vínculos master.`});$('editProductForm').addEventListener('submit',event=>{event.preventDefault();const quantity=Number($('editQuantity').value),error=$('editProductError');if(!Number.isSafeInteger(quantity)||quantity<0){error.textContent='Informe uma quantidade inteira igual ou maior que zero.';return}const old=p.quantity,addMasterEan=$('addMasterEan')?.value.trim()||'',addMasterUnits=Number($('addMasterUnits')?.value);if(addMasterEan){if(!Number.isSafeInteger(addMasterUnits)||addMasterUnits<1){error.textContent='Informe unidades por caixa válidas para a nova caixa master.';return}if(findProductByEan(addMasterEan)&&!p.masters.some(m=>m.ean===addMasterEan)){error.textContent='Este EAN já está vinculado a outro produto ou caixa.';return}}p.description=$('editDescription').value.trim();p.sku=$('editSku').value.trim();p.client=$('editClient').value.trim();p.location=$('editLocation').value.trim();p.expirationDate=$('editExpiration').value;p.masters=p.masters.filter(m=>!modalBody.querySelector(`[data-master-ean="${CSS.escape(m.ean)}"]`)?.checked);if(addMasterEan&&!p.masters.some(m=>m.ean===addMasterEan))p.masters.push({ean:addMasterEan,unitsPerCase:addMasterUnits});p.quantity=quantity;if(old!==quantity)registerScan(p,Math.abs(old-quantity),'ajuste');saveProducts();renderInventory();renderDashboard();renderMovement();renderInventoryExport();closeModal()})}
+async function openCamera(target='scan'){const request=++cameraRequestId;cameraTarget=target;if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia){cameraStatus.textContent='A câmera precisa de HTTPS e de permissão do navegador.';cameraStatus.classList.add('error');cameraBackdrop.classList.remove('hidden');return}const native='BarcodeDetector'in window,zxing=Boolean(window.ZXing?.BrowserMultiFormatReader);if(!native&&!zxing){cameraStatus.textContent='Leitura por câmera indisponível neste navegador. Use um leitor conectado ou digite o EAN.';cameraStatus.classList.add('error');cameraBackdrop.classList.remove('hidden');return}cameraBackdrop.classList.remove('hidden');cameraStatus.classList.remove('error');cameraStatus.textContent='Solicitando acesso à câmera…';try{if(native){const formats=await BarcodeDetector.getSupportedFormats(),valid=['ean_13','ean_8','upc_a','upc_e','itf','code_128'].filter(x=>formats.includes(x));if(!valid.length)throw Error('Este navegador não oferece formatos compatíveis.');barcodeDetector=new BarcodeDetector({formats})}const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});if(request!==cameraRequestId){stream.getTracks().forEach(t=>t.stop());return}cameraStream=stream;cameraVideo.srcObject=stream;await cameraVideo.play();if(request!==cameraRequestId){stopCamera();return}cameraActive=true;if(!native){cameraZxingReader=new window.ZXing.BrowserMultiFormatReader();cameraStatus.textContent='Mantenha o código visível na câmera.';cameraZxingReader.decodeFromVideoElement(cameraVideo,(result)=>{if(result&&cameraActive&&(cameraTarget==='master'||cameraTarget==='inventory'||modalBackdrop.classList.contains('hidden'))&&!pendingScan)handleCameraCode(result.getText())});return}cameraStatus.textContent='Mantenha o código de barras visível na câmera.';scanCameraFrame()}catch(error){stopCamera();cameraStatus.textContent=error.name==='NotAllowedError'?'Acesso à câmera negado. Permita o uso da câmera no navegador.':error.message||'Não foi possível iniciar a câmera.';cameraStatus.classList.add('error')}}
+async function scanCameraFrame(){if(!cameraActive)return;if((!modalBackdrop.classList.contains('hidden')&&cameraTarget!=='master'&&cameraTarget!=='inventory'&&cameraTarget!=='audit')||pendingScan){setTimeout(scanCameraFrame,180);return}if(!cameraScanPending&&cameraVideo.readyState>=HTMLMediaElement.HAVE_CURRENT_DATA){cameraScanPending=true;try{const found=await barcodeDetector.detect(cameraVideo),code=found.find(x=>/^\d{8,14}$/.test(x.rawValue));if(code&&(cameraTarget==='master'||cameraTarget==='inventory'||cameraTarget==='audit'||modalBackdrop.classList.contains('hidden'))&&!pendingScan){handleCameraCode(code.rawValue);return}}catch{cameraStatus.textContent='Não foi possível ler a imagem. Tente enquadrar novamente o código.'}finally{cameraScanPending=false}}if(cameraActive)setTimeout(scanCameraFrame,180)}
+function handleCameraCode(value){if(!cameraActive||(cameraTarget!=='master'&&cameraTarget!=='inventory'&&cameraTarget!=='audit'&&!modalBackdrop.classList.contains('hidden'))||pendingScan)return;const target=cameraTarget;stopCamera();cameraBackdrop.classList.add('hidden');if(target==='master'){const input=$('linkUnitEan')||$('linkedEan');if(input){input.value=value;input.dispatchEvent(new Event('input',{bubbles:true}));input.focus()}}else if(target==='inventory'){const input=$('inventoryEan');input.value=value;$('inventorySearchForm').requestSubmit()}else if(target==='audit'){const input=$('auditEan');if(input){input.value=value;$('auditForm').requestSubmit()}}else{eanInput.value=value;scanForm.requestSubmit()}cameraTarget='scan'}
+function stopCamera(){cameraActive=false;if(cameraZxingReader){try{cameraZxingReader.reset()}catch{}}cameraZxingReader=null;if(cameraStream)cameraStream.getTracks().forEach(t=>t.stop());cameraStream=null;cameraVideo.srcObject=null}
+function closeCamera(){cameraRequestId++;cameraActive=false;stopCamera();cameraBackdrop.classList.add('hidden');cameraStatus.classList.remove('error');if(cameraTarget==='master')$('linkedEan')?.focus();else if(!$('conferenciaView').hidden)eanInput.focus()}
+let conferenceDraft=null;
+function selectedScanType(){return document.querySelector('input[name="scanType"]:checked')?.value||'unit'}
+function addLotQuantity(product,{lot,expirationDate='',location='',quantity,type='entrada'}){const key=(lot||'').trim(),date=expirationDate||'',place=location||'';rememberConference({lot:key,location:place,client:product.client,ean:product.ean});product.lots=Array.isArray(product.lots)?product.lots:[];let entry=product.lots.find(item=>(item.lot||'')===key&&(item.expirationDate||'')===date&&(item.location||'')===place);if(!entry){entry={lot:key,expirationDate:date,location:place,quantity:0};product.lots.push(entry)}entry.quantity+=quantity;product.quantity+=quantity;if(place)product.location=place;if(date)product.expirationDate=date;registerScan(product,quantity,type)}
+function finishConferenceUpdate(message){saveProducts();renderInventory();renderDashboard();renderMovement();renderInventoryExport();playScanFeedback();conferenceDraft=null;closeModal();showMessage(message)}
+function promptStockExit(ean,type){const product=type==='master'?products.find(p=>p.masters.some(m=>m.ean===ean)):products.find(p=>p.ean===ean);if(!product){showMessage(type==='master'?'Caixa master não cadastrada.':'Produto não cadastrado.',true);return}const master=type==='master'?product.masters.find(m=>m.ean===ean):null,factor=master?.unitsPerCase||1,lots=(product.lots||[]).filter(l=>Number(l.quantity)>0);showModal({eyebrow:'CONFERÊNCIA · SAÍDA',title:'Registrar expedição',description:`${product.description}${master?` · ${factor} unidades por caixa`:''}`,icon:'−',content:`<form id="stockExitForm"><div class="form-group"><label for="exitLot">Lote *</label><select id="exitLot" required>${lots.map((l,i)=>`<option value="${i}">${escapeHtml(l.lot||'Sem identificação')} · ${escapeHtml(formatDate(l.expirationDate)||'sem validade')} · saldo ${Number(l.quantity)||0}</option>`).join('')}</select></div><div class="form-group"><label for="exitQuantity">Quantidade ${master?'de caixas master':'de unidades'} *</label><input id="exitQuantity" type="number" min="1" step="1" value="1" required></div><p class="inline-error" id="exitError">${lots.length?'':'Sem saldo disponível por lote para expedição.'}</p><div class="modal-actions"><button class="primary-button" type="submit" ${lots.length?'':'disabled'}>Confirmar saída</button></div></form>`});$('stockExitForm').addEventListener('submit',event=>{event.preventDefault();const lot=lots[Number($('exitLot').value)],count=Number($('exitQuantity').value),error=$('exitError');if(!lot||!Number.isSafeInteger(count)||count<1){error.textContent='Selecione um lote e informe uma quantidade válida.';return}const units=count*factor;if(units>Number(lot.quantity)||units>product.quantity){error.textContent=`Saldo insuficiente neste lote. Disponível: ${Math.floor(Number(lot.quantity)/factor)} ${master?'caixa(s)':'unidade(s)'}.`;return}lot.quantity-=units;product.quantity-=units;registerScan(product,units,'saida');rememberConference({lot:lot.lot,location:lot.location||product.location,client:product.client,ean:product.ean});finishConferenceUpdate(`${count} ${master?'caixa(s) master':'unidade(s)'} expedida(s): −${units} unidade(s).`)})}
+function openAudit(ean=''){showModal({eyebrow:'CONSULTA RÁPIDA',title:'Auditoria de EAN',description:'Consulte produtos e lotes sem alterar o estoque.',icon:'⌕',content:`<form id="auditForm" autocomplete="off"><div class="form-group"><label for="auditEan">EAN unitário ou caixa master</label><div class="ean-entry"><input id="auditEan" value="${escapeHtml(ean)}" placeholder="Digite ou bipe um EAN"><button class="secondary-button" type="button" id="auditCamera">Câmera</button><button class="secondary-button" type="submit">Consultar</button></div></div></form><div id="auditResult" class="audit-result"></div>`});$('auditForm').addEventListener('submit',event=>{event.preventDefault();const code=cleanEan($('auditEan').value),product=products.find(p=>p.ean===code||p.masters.some(m=>m.ean===code)),master=product?.masters.find(m=>m.ean===code),result=$('auditResult');if(!product){result.innerHTML='<p class="statistics-empty">EAN não encontrado.</p>';return}result.innerHTML=`<h3>${escapeHtml(product.description)}</h3><p>Cliente: ${escapeHtml(product.client)} · SKU: ${escapeHtml(product.sku||'—')}</p><p>EAN unitário: ${escapeHtml(product.ean)}${master?` · Caixa master ${escapeHtml(master.ean)} (${master.unitsPerCase} un./caixa)`:''}</p><p>Saldo total: <strong>${product.quantity.toLocaleString('pt-BR')} un.</strong></p><ul>${(product.lots||[]).map(l=>`<li>Lote ${escapeHtml(l.lot||'—')} · ${escapeHtml(formatDate(l.expirationDate)||'Sem validade')} · ${escapeHtml(l.location||product.location||'Sem endereço')} · ${Number(l.quantity)||0} un.</li>`).join('')||'<li>Sem lotes detalhados.</li>'}</ul>`});$('auditCamera').addEventListener('click',()=>openCamera('audit'));if(ean)$('auditForm').requestSubmit()}
+function openLabel(ean){const product=products.find(p=>p.ean===ean);if(!product)return;const lot=product.lots?.find(l=>Number(l.quantity)>0)||product.lots?.[0]||{};showModal({eyebrow:'ETIQUETA',title:'Imprimir etiqueta',description:'Imprima ou salve a etiqueta como PDF.',icon:'▤',content:`<article class="print-label"><strong>${escapeHtml(product.description)}</strong><span>SKU: ${escapeHtml(product.sku||'—')}</span><span>EAN: ${escapeHtml(product.ean)}</span><span>Lote: ${escapeHtml(lot.lot||'—')}</span><span>Validade: ${escapeHtml(formatDate(lot.expirationDate||product.expirationDate)||'—')}</span><span>Localização: ${escapeHtml(lot.location||product.location||'—')}</span></article><div class="modal-actions"><button class="primary-button" type="button" id="printLabelButton">Imprimir etiqueta</button></div>`});$('printLabelButton').addEventListener('click',()=>{document.body.classList.add('printing-label');window.print();document.body.classList.remove('printing-label')})}
+function promptStockExit(ean,type){const product=type==='master'?products.find(p=>p.masters.some(m=>m.ean===ean)):products.find(p=>p.ean===ean);if(!product){showMessage(type==='master'?'Caixa master não cadastrada.':'Produto unitário não cadastrado.',true);return}const master=type==='master'?product.masters.find(m=>m.ean===ean):null,lots=(product.lots||[]).filter(l=>Number(l.quantity)>0),factor=master?.unitsPerCase||1;showModal({eyebrow:'CONFERÊNCIA · SAÍDA',title:'Registrar expedição',description:`${product.description}${master?` · ${factor} unidades por caixa`:''}`,icon:'−',content:`<form id="stockExitForm"><div class="form-group"><label for="exitLot">Lote *</label><select id="exitLot" required>${lots.map((l,i)=>`<option value="${i}">${escapeHtml(l.lot||'Sem identificação')} · ${escapeHtml(formatDate(l.expirationDate)||'sem validade')} · saldo ${Number(l.quantity)||0}</option>`).join('')}</select></div><div class="form-group"><label for="exitQuantity">Quantidade ${master?'de caixas master':'de unidades'} *</label><input id="exitQuantity" type="number" min="1" step="1" value="1" required></div><p class="inline-error" id="exitError">${lots.length?'':'Produto sem saldo por lote disponível para baixa.'}</p><div class="modal-actions"><button class="primary-button" type="submit" ${lots.length?'':'disabled'}>Confirmar saída</button></div></form>`});$('stockExitForm').addEventListener('submit',event=>{event.preventDefault();const index=Number($('exitLot').value),lot=lots[index],amount=Number($('exitQuantity').value),error=$('exitError');if(!lot||!Number.isSafeInteger(amount)||amount<1){error.textContent='Informe uma quantidade válida e selecione um lote.';return}const units=amount*factor;if(units>Number(lot.quantity)||units>product.quantity){error.textContent=`Saldo insuficiente. Disponível neste lote: ${Math.floor(lot.quantity/factor)} ${master?'caixa(s)':'unidade(s)'}.`;return}lot.quantity-=units;product.quantity-=units;registerScan(product,units,'saida');rememberConference({lot:lot.lot,location:lot.location||product.location,client:product.client,ean:product.ean});finishConferenceUpdate(`${amount} ${master?'caixa(s) master':'unidade(s)'} expedida(s): −${units} unidade(s) de ${product.description}.`)})}
+function openAudit(ean=''){const initial=ean||'';showModal({eyebrow:'CONSULTA RÁPIDA',title:'Auditoria de EAN',description:'Consulte um EAN sem alterar o estoque.',icon:'⌕',content:`<form id="auditForm" autocomplete="off"><div class="form-group"><label for="auditEan">EAN unitário ou caixa master</label><div class="ean-entry"><input id="auditEan" value="${escapeHtml(initial)}" placeholder="Digite ou bipe um EAN"><button class="secondary-button" type="button" id="auditCamera">Câmera</button><button class="secondary-button" type="submit">Consultar</button></div></div></form><div id="auditResult" class="audit-result"></div>`});const input=$('auditEan');$('auditForm').addEventListener('submit',event=>{event.preventDefault();const code=cleanEan(input.value),owner=products.find(p=>p.ean===code||p.masters.some(m=>m.ean===code)),box=owner?.masters.find(m=>m.ean===code),result=$('auditResult');if(!owner){result.innerHTML='<p class="statistics-empty">EAN não encontrado no inventário.</p>';return}result.innerHTML=`<h3>${escapeHtml(owner.description)}</h3><p>Cliente: ${escapeHtml(owner.client)} · SKU: ${escapeHtml(owner.sku||'—')}</p><p>EAN unitário: ${escapeHtml(owner.ean)}${box?` · Caixa master: ${escapeHtml(box.ean)} (${box.unitsPerCase} un./caixa)`:''}</p><p>Saldo total: <strong>${owner.quantity.toLocaleString('pt-BR')} un.</strong></p><ul>${(owner.lots||[]).map(l=>`<li>Lote ${escapeHtml(l.lot||'—')} · ${escapeHtml(formatDate(l.expirationDate)||'Sem validade')} · ${escapeHtml(l.location||owner.location||'Sem endereço')} · ${Number(l.quantity)||0} un.</li>`).join('')||'<li>Sem detalhamento de lotes.</li>'}</ul>`});$('auditCamera').addEventListener('click',()=>openCamera('audit'));if(initial)$('auditForm').requestSubmit()}
+function openLabel(ean){const p=products.find(x=>x.ean===ean);if(!p)return;const lot=p.lots?.find(l=>Number(l.quantity)>0)||p.lots?.[0]||{};showModal({eyebrow:'ETIQUETA',title:'Etiqueta para impressão',description:'Use a função de impressão do navegador para imprimir ou salvar como PDF.',icon:'▤',content:`<article class="print-label" id="printLabel"><strong>${escapeHtml(p.description)}</strong><span>SKU: ${escapeHtml(p.sku||'—')}</span><span>EAN: ${escapeHtml(p.ean)}</span><span>Lote: ${escapeHtml(lot.lot||'—')}</span><span>Validade: ${escapeHtml(formatDate(lot.expirationDate||p.expirationDate)||'—')}</span><span>Localização: ${escapeHtml(lot.location||p.location||'—')}</span></article><div class="modal-actions"><button class="primary-button" id="printLabelButton" type="button">Imprimir etiqueta</button></div>`});$('printLabelButton').addEventListener('click',()=>{document.body.classList.add('printing-label');window.print();document.body.classList.remove('printing-label')})}
+function promptScanDetails(ean){if(!isAdmin())return;const type=selectedScanType();if(scanOperation()==='saida'){promptStockExit(ean,type);return}if(scanOperation()==='saida'){promptStockExit(ean,type);return}if(type==='master'){const owner=products.find(p=>p.masters.some(m=>m.ean===ean));if(owner){const master=owner.masters.find(m=>m.ean===ean);showModal({eyebrow:'CONFERÊNCIA · CAIXA MASTER',title:'Registrar caixas master',description:`${owner.description} · ${master.unitsPerCase} unidades por caixa`,icon:'▣',content:`<form id="knownMasterForm"><div class="form-group"><label for="masterLot">Lote *</label><input id="masterLot" maxlength="80" required></div><div class="form-group"><label for="masterLocation">Endereço *</label><input id="masterLocation" maxlength="80" value="${escapeHtml(owner.location||'')}" required></div><div class="form-group"><label for="masterCases">Quantidade de caixas master *</label><input id="masterCases" type="number" min="1" step="1" value="1" required></div><p class="inline-error" id="conferenceError"></p><div class="modal-actions"><button class="primary-button" type="submit">Adicionar à conferência</button></div></form>`});$('knownMasterForm').addEventListener('submit',event=>{event.preventDefault();const cases=Number($('masterCases').value);if(!Number.isSafeInteger(cases)||cases<1){$('conferenceError').textContent='Informe uma quantidade inteira maior que zero.';return}const quantity=cases*master.unitsPerCase;rememberConference({lot:$('masterLot').value.trim(),location:$('masterLocation').value.trim(),client:owner.client,ean:owner.ean});addLotQuantity(owner,{lot:$('masterLot').value.trim(),location:$('masterLocation').value.trim(),quantity,type:'master'});finishConferenceUpdate(`${cases} caixa(s) master registrada(s): +${quantity} unidade(s) de ${owner.description}.`) });return}if(findProductByEan(ean)){showMessage('Este EAN está cadastrado como produto unitário. Selecione Unitário para registrá-lo.',true);return}showNewMasterForm(ean);return}const product=products.find(p=>p.ean===ean);if(product){showModal({eyebrow:'CONFERÊNCIA · UNITÁRIO',title:'Registrar unidades',description:product.description,icon:'▥',content:`<form id="knownUnitForm"><div class="form-group"><label for="unitLot">Lote *</label><input id="unitLot" maxlength="80" required></div><div class="form-group"><label for="unitExpiration">Validade *</label><input id="unitExpiration" type="date" required></div><div class="form-group"><label for="unitQuantity">Quantidade de unidades *</label><input id="unitQuantity" type="number" min="1" step="1" value="1" required></div><p class="inline-error" id="conferenceError"></p><div class="modal-actions"><button class="primary-button" type="submit">Adicionar à conferência</button></div></form>`});$('knownUnitForm').addEventListener('submit',event=>{event.preventDefault();const quantity=Number($('unitQuantity').value);if(!Number.isSafeInteger(quantity)||quantity<1){$('conferenceError').textContent='Informe uma quantidade inteira maior que zero.';return}rememberConference({lot:$('unitLot').value.trim(),location:product.location,client:product.client,ean:product.ean});addLotQuantity(product,{lot:$('unitLot').value.trim(),expirationDate:$('unitExpiration').value,location:product.location,quantity,type:'entrada'});finishConferenceUpdate(`${quantity} unidade(s) de ${product.description} adicionada(s) à conferência.`)});return}if(products.some(p=>p.masters.some(m=>m.ean===ean))){showMessage('Este EAN pertence a uma caixa master. Selecione Caixa Master.',true);return}showNewUnitForm(ean)}
+function showNewUnitForm(ean){showModal({eyebrow:'CADASTRO · PRODUTO UNITÁRIO',title:'Cadastrar e conferir produto',description:`Informe os dados do produto para o EAN ${ean}.`,icon:'＋',content:`<form id="newConferenceUnitForm"><div class="form-row"><div class="form-group"><label for="newUnitDescription">Descrição *</label><input id="newUnitDescription" maxlength="120" required></div><div class="form-group"><label for="newUnitSku">SKU</label><input id="newUnitSku" maxlength="60"></div></div><div class="form-row"><div class="form-group"><label for="newUnitClient">Cliente *</label><input id="newUnitClient" maxlength="80" required></div><div class="form-group"><label for="newUnitWeight">Peso / ml</label><input id="newUnitWeight" maxlength="40" placeholder="Ex.: 500 ml"></div></div><div class="form-row"><div class="form-group"><label for="newUnitLot">Lote *</label><input id="newUnitLot" maxlength="80" required></div><div class="form-group"><label for="newUnitExpiration">Validade *</label><input id="newUnitExpiration" type="date" required></div></div><div class="form-row"><div class="form-group"><label for="newUnitLocation">Endereço *</label><input id="newUnitLocation" maxlength="80" required></div><div class="form-group"><label for="newUnitQuantity">Quantidade a adicionar *</label><input id="newUnitQuantity" type="number" min="1" step="1" value="1" required></div></div><p class="inline-error" id="conferenceError"></p><div class="modal-actions"><button class="primary-button" type="submit">Cadastrar e adicionar</button></div></form>`});$('newConferenceUnitForm').addEventListener('submit',event=>{event.preventDefault();const quantity=Number($('newUnitQuantity').value);if(!Number.isSafeInteger(quantity)||quantity<1){$('conferenceError').textContent='Informe uma quantidade inteira maior que zero.';return}const product={ean,sku:$('newUnitSku').value.trim(),description:$('newUnitDescription').value.trim(),client:$('newUnitClient').value.trim(),weightMl:$('newUnitWeight').value.trim(),location:'',expirationDate:'',quantity:0,lots:[],masters:[]};products.push(product);rememberConference({lot:$('newUnitLot').value.trim(),location:$('newUnitLocation').value.trim(),client:product.client,ean:product.ean});addLotQuantity(product,{lot:$('newUnitLot').value.trim(),expirationDate:$('newUnitExpiration').value,location:$('newUnitLocation').value.trim(),quantity,type:'entrada'});finishConferenceUpdate(`${product.description} cadastrado: ${quantity} unidade(s) adicionada(s).`)});}
+function showNewMasterForm(masterEan){showModal({eyebrow:'CADASTRO · CAIXA MASTER',title:'Vincular e conferir caixa master',description:`Vincule o EAN ${masterEan} a um produto unitário já cadastrado.`,icon:'▣',content:`<form id="newConferenceMasterForm"><div class="form-group"><label for="linkUnitEan">EAN do produto unitário *</label><div class="ean-entry"><input id="linkUnitEan" inputmode="numeric" required placeholder="EAN unitário"><button class="secondary-button" id="conferenceMasterCamera" type="button">Câmera ▣</button></div></div><div id="linkedConferenceProduct" class="link-product" hidden></div><div class="form-row"><div class="form-group"><label for="newMasterUnits">Unidades por caixa *</label><input id="newMasterUnits" type="number" min="1" step="1" required></div><div class="form-group"><label for="newMasterCases">Quantidade de caixas *</label><input id="newMasterCases" type="number" min="1" step="1" value="1" required></div></div><div class="form-row"><div class="form-group"><label for="newMasterLot">Lote *</label><input id="newMasterLot" maxlength="80" required></div><div class="form-group"><label for="newMasterExpiration">Validade *</label><input id="newMasterExpiration" type="date" required></div></div><div class="form-group"><label for="newMasterLocation">Endereço *</label><input id="newMasterLocation" maxlength="80" required></div><p class="inline-error" id="conferenceError"></p><div class="modal-actions"><button class="primary-button" type="submit">Vincular e adicionar</button></div></form>`});const linked=$('linkUnitEan'),productInfo=$('linkedConferenceProduct');const refresh=()=>{const product=products.find(p=>p.ean===cleanEan(linked.value));productInfo.hidden=!product;productInfo.innerHTML=product?`<strong>${escapeHtml(product.description)}</strong>${escapeHtml(product.client)} · ${escapeHtml(product.ean)}`:''};linked.addEventListener('input',refresh);$('conferenceMasterCamera').addEventListener('click',()=>openCamera('master'));$('newConferenceMasterForm').addEventListener('submit',event=>{event.preventDefault();const product=products.find(p=>p.ean===cleanEan(linked.value)),units=Number($('newMasterUnits').value),cases=Number($('newMasterCases').value),error=$('conferenceError');if(!product){error.textContent='EAN unitário não encontrado. Cadastre o produto antes de vincular a caixa.';return}if(findProductByEan(masterEan)){error.textContent='Este EAN já está vinculado a um produto ou caixa master.';return}if(!Number.isSafeInteger(units)||units<1||!Number.isSafeInteger(cases)||cases<1){error.textContent='Informe quantidades inteiras maiores que zero.';return}product.masters.push({ean:masterEan,unitsPerCase:units});const quantity=units*cases;addLotQuantity(product,{lot:$('newMasterLot').value.trim(),expirationDate:$('newMasterExpiration').value,location:$('newMasterLocation').value.trim(),quantity,type:'master'});finishConferenceUpdate(`Caixa master vinculada: ${cases} caixa(s), +${quantity} unidade(s) de ${product.description}.`)});refresh();}
+scanForm.addEventListener('submit',event=>{event.preventDefault();if(!modalBackdrop.classList.contains('hidden')||pendingScan)return;const ean=cleanEan(eanInput.value);if(!ean){showMessage('Leia ou digite um código EAN para continuar.',true);return}eanInput.value='';promptScanDetails(ean)});
+$('cameraOpen').addEventListener('click',()=>openCamera('scan'));$('inventoryCameraOpen').addEventListener('click',()=>openCamera('inventory'));$('cameraClose').addEventListener('click',closeCamera);cameraBackdrop.addEventListener('click',e=>{if(e.target===cameraBackdrop)closeCamera()});$('modalClose').addEventListener('click',closeModal);modalBackdrop.addEventListener('click',e=>{if(e.target===modalBackdrop)closeModal()});document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!cameraBackdrop.classList.contains('hidden'))closeCamera();else if(e.key==='Escape'&&!modalBackdrop.classList.contains('hidden'))closeModal()});modalBody.addEventListener('click',e=>{if(e.target.id==='masterCameraOpen')openCamera('master')});
+document.addEventListener('keydown',event=>{if($('conferenciaView').hidden||!event.altKey)return;if(event.key==='1'){document.querySelector('input[name="scanType"][value="unit"]').checked=true;eanInput.focus()}else if(event.key==='2'){document.querySelector('input[name="scanType"][value="master"]').checked=true;eanInput.focus()}});
+document.addEventListener('keydown',event=>{if($('conferenciaView').hidden||!event.altKey)return;if(event.key==='1'){document.querySelector('input[name="scanType"][value="unit"]').checked=true;eanInput.focus()}else if(event.key==='2'){document.querySelector('input[name="scanType"][value="master"]').checked=true;eanInput.focus()}});
+document.querySelectorAll('.nav-item[data-view]').forEach(link=>link.addEventListener('click',event=>{event.preventDefault();if(link.dataset.view==='gestao'&&!isAdmin())return;showView(link.dataset.view);if(matchMedia('(max-width:650px)').matches)document.querySelector('.sidebar').classList.remove('expanded')}));$('sidebarToggle').addEventListener('click',event=>{const sidebar=document.querySelector('.sidebar'),mobile=matchMedia('(max-width:650px)').matches;if(mobile){sidebar.classList.toggle('expanded');event.currentTarget.setAttribute('aria-expanded',String(sidebar.classList.contains('expanded')))}else{$('appShell').classList.toggle('sidebar-collapsed');const expanded=!$('appShell').classList.contains('sidebar-collapsed');event.currentTarget.setAttribute('aria-expanded',String(expanded));event.currentTarget.setAttribute('aria-label',expanded?'Recolher menu':'Expandir menu')}});
+$('inventorySearchForm').addEventListener('submit',e=>{e.preventDefault();inventoryFilter=$('inventoryEan').value.trim();renderInventory()});$('inventoryClientFilter').addEventListener('change',renderInventory);$('inventoryStatusFilter').addEventListener('change',renderInventory);$('auditOpen').addEventListener('click',()=>openAudit());$('clearInventoryFilter').addEventListener('click',()=>{inventoryFilter='';renderInventory();$('inventoryEan').focus()});$('exportClient').addEventListener('change',renderInventoryExport);$('exportCsvButton').addEventListener('click',exportInventoryCsv);$('historyCsvButton').addEventListener('click',exportHistoryCsv);$('backupExportButton').addEventListener('click',exportBackupJson);$('backupImportFile').addEventListener('change',importBackupJson);
+$('loginForm').addEventListener('submit',async event=>{event.preventDefault();const email=$('loginUser').value.trim().toLowerCase(),password=$('loginPassword').value;try{$('loginError').textContent='Conectando...';const {data,error}=await window.luminaDb.auth.signInWithPassword({email,password});if(error)throw error;const {data:profile,error:profileError}=await window.luminaDb.from('profiles').select('*').eq('id',data.user.id).single();if(profileError)throw profileError;const user={id:data.user.id,email:data.user.email,login:profile.login||data.user.email,name:profile.full_name||data.user.email,phone:profile.phone||'',role:profile.role};users=[user];currentUser=user;$('loginError').textContent='';await loadCloudData();enterApp(user)}catch(error){$('loginError').textContent=error.message||'Não foi possível entrar.'}});$('logoutButton').addEventListener('click',async()=>{await window.luminaDb.auth.signOut();sessionStorage.removeItem(SESSION_KEY);currentUser=null;$('appShell').hidden=true;$('loginScreen').hidden=false;$('loginPassword').value='';$('loginUser').focus()});
+$('userForm').addEventListener('submit',async event=>{event.preventDefault();$('userFormError').textContent='Cadastre usuários em Authentication → Users no Supabase. A criação segura pelo painel será integrada por Edge Function.';return;event.preventDefault();if(!isAdmin())return;const login=$('newLogin').value.trim(),error=$('userFormError');if(users.some(u=>u.login.toLowerCase()===login.toLowerCase())){error.textContent='Este login já está sendo utilizado.';return}try{const passwordHash=await hashPassword($('newPassword').value);users.push({name:$('userName').value.trim(),login,passwordHash,phone:$('userPhone').value.trim(),email:$('userEmail').value.trim(),role:$('userRole').value});saveUsers();event.currentTarget.reset();error.textContent='';renderUsers()}catch(e){error.textContent=e.message}});$('userRows').addEventListener('click',event=>{const button=event.target.closest('[data-delete-user]');if(!button||!isAdmin())return;const login=button.dataset.deleteUser;if(login==='admin'||login===currentUser.login)return;users=users.filter(u=>u.login!==login);saveUsers();renderUsers()});function renderUsers(){$('userRows').innerHTML=users.map(u=>`<tr><td>${escapeHtml(u.name)}</td><td>${escapeHtml(u.login)}</td><td>${escapeHtml(u.phone||'—')}</td><td>${escapeHtml(u.email||'—')}</td><td>${u.role==='admin'?'Administrador':'Operador'}</td><td><button class="edit-product-button" type="button" data-edit-user="${escapeHtml(u.login)}">Editar</button> ${u.login==='admin'||u.login===currentUser?.login?'—':`<button class="remove-unit-button" type="button" data-delete-user="${escapeHtml(u.login)}">Remover</button>`}</td></tr>`).join('')}
+function editUser(login){if(!isAdmin())return;const user=users.find(u=>u.login===login);if(!user)return;const protectedRole=login==='admin'||login===currentUser.login;showModal({eyebrow:'GESTÃO DE USUÁRIOS',title:'Editar colaborador',description:`Atualize os dados de ${user.name}.`,content:`<form id="editUserForm"><div class="form-group"><label for="editUserName">Nome *</label><input id="editUserName" maxlength="100" value="${escapeHtml(user.name)}" required></div><div class="form-row"><div class="form-group"><label for="editUserPhone">Telefone</label><input id="editUserPhone" maxlength="30" value="${escapeHtml(user.phone||'')}"></div><div class="form-group"><label for="editUserEmail">E-mail</label><input id="editUserEmail" type="email" maxlength="120" value="${escapeHtml(user.email||'')}"></div></div><div class="form-group"><label for="editUserRole">Perfil</label><select id="editUserRole" ${protectedRole?'disabled':''}><option value="user" ${user.role==='user'?'selected':''}>Operador</option><option value="admin" ${user.role==='admin'?'selected':''}>Administrador</option></select></div><p class="inline-error" id="editUserError"></p><div class="modal-actions"><button class="primary-button" type="submit">Salvar</button></div></form>`});$('editUserForm').addEventListener('submit',event=>{event.preventDefault();user.name=$('editUserName').value.trim();user.phone=$('editUserPhone').value.trim();user.email=$('editUserEmail').value.trim();if(!protectedRole)user.role=$('editUserRole').value;saveUsers();renderUsers();closeModal()})}
+$('userRows').addEventListener('click',event=>{const button=event.target.closest('[data-edit-user]');if(button)editUser(button.dataset.editUser)})
+function periodStart(period){const now=new Date(),start=new Date(now);if(period==='24h')return new Date(now.getTime()-86400000);if(period.endsWith('d'))start.setDate(start.getDate()-Number(period.slice(0,-1)));else if(period.endsWith('m'))start.setMonth(start.getMonth()-Number(period.slice(0,-1)));else if(period.endsWith('y'))start.setFullYear(start.getFullYear()-Number(period.slice(0,-1)));return start}
+function renderStatistics(){const group=$('operatorFilterGroup'),select=$('statisticsOperator');let login=currentUser.login;if(isAdmin()){group.hidden=false;const operators=users.filter(u=>u.role!=='admin'),previous=select.value;select.innerHTML='<option value="all">Todos os operadores</option>'+operators.map(u=>`<option value="${escapeHtml(u.login)}">${escapeHtml(u.name)} (${escapeHtml(u.login)})</option>`).join('');if(operators.some(u=>u.login===previous))select.value=previous;login=select.value}else group.hidden=true;const start=periodStart($('statisticsPeriod').value),scans=scanHistory.filter(s=>{const date=new Date(s.timestamp);return date>=start&&date<=new Date()&&(isAdmin()?(login==='all'||s.login===login):s.login===currentUser.login)}),total=scans.reduce((n,s)=>n+(Number(s.quantity)||0),0),inbound=scans.filter(s=>s.type==='entrada'||s.type==='master').reduce((n,s)=>n+(Number(s.quantity)||0),0),outbound=scans.filter(s=>s.type==='saida').reduce((n,s)=>n+(Number(s.quantity)||0),0),adjustments=scans.filter(s=>s.type==='ajuste').length;$('statisticsSummary').innerHTML=`<article class="stat-card"><div class="stat-top"><span>Entradas</span><span class="stat-icon">＋</span></div><strong>${inbound.toLocaleString('pt-BR')}</strong><small>Unidades recebidas (inclui master)</small></article><article class="stat-card"><div class="stat-top"><span>Saídas</span><span class="stat-icon">−</span></div><strong>${outbound.toLocaleString('pt-BR')}</strong><small>Unidades baixadas</small></article><article class="stat-card"><div class="stat-top"><span>Ajustes</span><span class="stat-icon">↔</span></div><strong>${adjustments.toLocaleString('pt-BR')}</strong><small>Ajustes manuais registrados</small></article><article class="stat-card"><div class="stat-top"><span>Leituras</span><span class="stat-icon">↗</span></div><strong>${scans.length.toLocaleString('pt-BR')}</strong><small>${total.toLocaleString('pt-BR')} unidades movimentadas</small></article>`;const byClient=new Map(),byProduct=new Map();scans.forEach(s=>{const c=s.client||'Sem cliente';byClient.set(c,(byClient.get(c)||0)+(Number(s.quantity)||0));const key=s.productEan,item=byProduct.get(key)||{name:s.productName||'Produto',client:s.client||'—',quantity:0};item.quantity+=Number(s.quantity)||0;byProduct.set(key,item)});const markup=entries=>entries.length?`<ul class="statistics-list">${entries.map(([name,value])=>`<li><span><strong>${escapeHtml(name)}</strong>${value.detail?`<small>${escapeHtml(value.detail)}</small>`:''}</span><b>${value.count.toLocaleString('pt-BR')} un.</b></li>`).join('')}</ul>`:'<p class="statistics-empty">Sem operações neste período.</p>';const clients=[...byClient].sort((a,b)=>b[1]-a[1]).map(([name,count])=>[name,{count}]),top=[...byProduct].sort((a,b)=>b[1].quantity-a[1].quantity).slice(0,10).map(([ean,item])=>[item.name,{count:item.quantity,detail:`${item.client} · EAN ${ean}`}]);$('statisticsClients').innerHTML=markup(clients);$('statisticsProducts').innerHTML=markup(top)}
+$('statisticsPeriod').addEventListener('change',renderStatistics);$('statisticsOperator').addEventListener('change',renderStatistics);const sound=$('soundFeedback'),vibration=$('vibrationFeedback');sound.checked=localStorage.getItem('lumina-sound')==='true';vibration.checked=localStorage.getItem('lumina-vibration')==='true';sound.addEventListener('change',()=>localStorage.setItem('lumina-sound',String(sound.checked)));vibration.addEventListener('change',()=>localStorage.setItem('lumina-vibration',String(vibration.checked)));
+$('todayLabel').textContent=new Intl.DateTimeFormat('pt-BR',{weekday:'short',day:'2-digit',month:'short',year:'numeric'}).format(new Date());
+async function loadCloudData(){
+  const {data:rows,error}=await window.luminaDb.from('lumina_products').select('ean,product_data');if(error)throw error;
+  const cloud=(rows||[]).map(r=>({...r.product_data,ean:r.ean,quantity:Number(r.product_data?.quantity)||0,masters:Array.isArray(r.product_data?.masters)?r.product_data.masters:[],lots:Array.isArray(r.product_data?.lots)?r.product_data.lots:[]}));
+  products.splice(0,products.length,...cloud);
+  const {data:moves, error:moveError}=await window.luminaDb.from('lumina_movements').select('movement_data').order('created_at',{ascending:false}).limit(5000);if(moveError)throw moveError;
+  scanHistory=(moves||[]).map(x=>x.movement_data).filter(Boolean);storage.set(STORAGE_KEY,JSON.stringify(products));storage.set(SCANS_KEY,JSON.stringify(scanHistory));
+  if(isAdmin() && cloud.length===0){const local=loadProducts();if(local.length){products.splice(0,products.length,...local);await syncProductsToCloud()}}
 }
-
-function saveProducts() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
+async function syncProductsToCloud(){
+  const payload=products.map(product=>({ean:product.ean,product_data:product,created_by:currentUser?.id,updated_at:new Date().toISOString()}));
+  if(payload.length){const {error}=await window.luminaDb.from('lumina_products').upsert(payload,{onConflict:'ean'});if(error)throw error}
+  const {data:existing,error:readError}=await window.luminaDb.from('lumina_products').select('ean');if(readError)throw readError;
+  const keep=new Set(products.map(p=>p.ean)),removed=(existing||[]).map(x=>x.ean).filter(ean=>!keep.has(ean));
+  if(removed.length){const {error}=await window.luminaDb.from('lumina_products').delete().in('ean',removed);if(error)throw error}
 }
+async function initializeApp(){try{const {data:{session}}=await window.luminaDb.auth.getSession();if(session){const {data:profile,error}=await window.luminaDb.from('profiles').select('*').eq('id',session.user.id).single();if(error)throw error;const user={id:session.user.id,email:session.user.email,login:profile.login||session.user.email,name:profile.full_name||session.user.email,phone:profile.phone||'',role:profile.role};users=[user];currentUser=user;await loadCloudData();enterApp(user)}else $('loginUser').focus()}catch(error){$('loginError').textContent=error.message||'Falha ao iniciar o Lumina.';$('loginUser').focus()}}initializeApp();
 
-function loadUsers() {
-  try {
-    const stored = JSON.parse(localStorage.getItem(USERS_KEY) || 'null');
-    if (Array.isArray(stored) && stored.length) return stored;
-  } catch { /* Use the initial administrator if saved data is unavailable. */ }
-  const initial = [{name: 'Administrador', login: 'admin', password: 'admin', phone: '', email: '', role: 'admin'}];
-  localStorage.setItem(USERS_KEY, JSON.stringify(initial));
-  return initial;
-}
-
-function saveUsers() {
-  localStorage.setItem(USERS_KEY, JSON.stringify(users));
-}
-
-function loadScanHistory() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(SCANS_KEY) || '[]');
-    return Array.isArray(saved) ? saved.filter(scan => scan && scan.login && scan.timestamp) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveScanHistory() {
-  localStorage.setItem(SCANS_KEY, JSON.stringify(scanHistory));
-}
-
-function registerScan(product, quantity) {
-  scanHistory.push({
-    login: currentUser.login,
-    operatorName: currentUser.name,
-    productEan: product.ean,
-    productName: product.description,
-    client: product.client,
-    quantity,
-    timestamp: new Date().toISOString()
-  });
-  saveScanHistory();
-}
-
-function isAdmin() {
-  return currentUser?.role === 'admin';
-}
-
-function enterApp(user) {
-  currentUser = user;
-  sessionStorage.setItem(SESSION_KEY, user.login);
-  document.getElementById('loginScreen').hidden = true;
-  document.getElementById('appShell').hidden = false;
-  document.getElementById('signedInUser').textContent = user.name;
-  document.querySelector('.admin-only').hidden = !isAdmin();
-  renderInventory();
-  renderDashboard();
-  if (!isAdmin() && document.getElementById('gestaoView').hidden === false) showView('dashboard');
-}
-
-function showView(name) {
-  Object.entries(viewSections).forEach(([key, section]) => { section.hidden = key !== name; });
-  document.querySelectorAll('.nav-item[data-view]').forEach(item => item.classList.toggle('active', item.dataset.view === name));
-  if (name === 'estoque') renderInventory();
-  if (name === 'movimentacao') renderMovement();
-  if (name === 'dashboard') renderDashboard();
-  if (name === 'gestao' && isAdmin()) renderUsers();
-  if (name === 'estatisticas') renderStatistics();
-}
-
-function cleanEan(value) {
-  return value.trim().replace(/\s+/g, '');
-}
-
-function findProductByEan(ean) {
-  return products.find(product => product.ean === ean || product.masters.some(master => master.ean === ean));
-}
-
-function formatDate(value) {
-  if (!value) return '';
-  const [year, month, day] = value.split('-').map(Number);
-  return new Intl.DateTimeFormat('pt-BR').format(new Date(year, month - 1, day));
-}
-
-function renderDashboard() {
-  const clients = new Set(products.map(product => product.client).filter(Boolean));
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const limit = new Date(today);
-  limit.setMonth(limit.getMonth() + 3);
-  const expiring = products.filter(product => {
-    if (!product.expirationDate) return false;
-    const [year, month, day] = product.expirationDate.split('-').map(Number);
-    const date = new Date(year, month - 1, day);
-    return date >= today && date <= limit;
-  }).length;
-  document.getElementById('dashboardUnits').textContent = products.length.toLocaleString('pt-BR');
-  document.getElementById('dashboardMasters').textContent = products.reduce((sum, product) => sum + product.masters.length, 0).toLocaleString('pt-BR');
-  document.getElementById('dashboardClients').textContent = clients.size.toLocaleString('pt-BR');
-  document.getElementById('dashboardExpiring').textContent = expiring.toLocaleString('pt-BR');
-}
-
-function renderInventory() {
-  const rows = document.getElementById('productRows');
-  const visibleProducts = products.filter(product => !inventoryFilter || product.ean === inventoryFilter || product.masters.some(master => master.ean === inventoryFilter));
-  document.getElementById('inventoryFilterStatus').textContent = inventoryFilter ? `Filtro EAN: ${inventoryFilter} · ${visibleProducts.length} produto(s) encontrado(s)` : '';
-  document.getElementById('inventoryEan').value = inventoryFilter;
-  const totalUnits = products.reduce((sum, product) => sum + product.quantity, 0);
-  const masterCount = products.reduce((sum, product) => sum + product.masters.length, 0);
-  document.getElementById('totalUnits').textContent = totalUnits.toLocaleString('pt-BR');
-  document.getElementById('productCount').textContent = products.length.toLocaleString('pt-BR');
-  document.getElementById('masterCount').textContent = masterCount.toLocaleString('pt-BR');
-  document.getElementById('tableCount').textContent = `${visibleProducts.length} ${visibleProducts.length === 1 ? 'produto' : 'produtos'}`;
-  document.getElementById('emptyState').hidden = visibleProducts.length > 0;
-  document.getElementById('emptyState').querySelector('strong').textContent = inventoryFilter ? 'Nenhum produto encontrado' : 'Nenhum produto no inventário';
-  document.getElementById('emptyState').querySelector('p').textContent = inventoryFilter ? 'Confira o EAN bipado ou limpe o filtro.' : 'Comece bipando um EAN para cadastrar seu primeiro produto.';
-  rows.innerHTML = visibleProducts.map(product => `
-    <tr class="${product.quantity <= 0 ? 'stock-zero' : ''}">
-      <td><span class="product-name">${escapeHtml(product.description)}</span><span class="product-sub">${product.masters.length} ${product.masters.length === 1 ? 'caixa master' : 'caixas master'}</span></td>
-      <td><span class="sku-pill">${escapeHtml(product.sku || '—')}</span></td>
-      <td><span class="ean-text">${escapeHtml(product.ean)}</span></td>
-      <td>${escapeHtml(product.client)}</td>
-      <td>${escapeHtml(product.location || 'Não definida')}</td>
-      <td>${escapeHtml(formatDate(product.expirationDate) || '—')}</td>
-      <td class="quantity-cell">${product.quantity.toLocaleString('pt-BR')} un.</td>
-      <td><button type="button" class="remove-unit-button" data-remove-ean="${escapeHtml(product.ean)}" ${product.quantity <= 0 ? 'disabled' : ''} aria-label="Remover uma unidade de ${escapeHtml(product.description)}">−1 un.</button></td>
-    </tr>`).join('');
-  rows.querySelectorAll('[data-remove-ean]').forEach(button => button.addEventListener('click', () => {
-    const product = products.find(item => item.ean === button.dataset.removeEan);
-    if (!product || product.quantity <= 0) return;
-    product.quantity -= 1;
-    saveProducts();
-    renderInventory();
-    renderDashboard();
-  }));
-  renderMovement();
-}
-
-let selectedMovementClient = null;
-
-function renderMovement() {
-  const content = document.getElementById('movementContent');
-  const clients = [...new Set(products.map(product => product.client).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
-  if (!selectedMovementClient || !clients.includes(selectedMovementClient)) {
-    selectedMovementClient = null;
-    content.innerHTML = clients.length ? `<p class="view-intro">Selecione um cliente para consultar e atualizar as localizações dos produtos.</p><div class="client-grid">${clients.map(client => `<button type="button" class="client-card" data-client="${escapeHtml(client)}"><span class="client-avatar">${escapeHtml(client.charAt(0).toUpperCase())}</span><span><strong>${escapeHtml(client)}</strong><small>${products.filter(product => product.client === client).length} produtos</small></span><span class="client-arrow">›</span></button>`).join('')}</div>` : '<div class="empty-state"><span class="empty-icon">⇄</span><strong>Nenhum cliente cadastrado</strong><p>Cadastre produtos na sessão Conferência para começar.</p></div>';
-    content.querySelectorAll('[data-client]').forEach(button => button.addEventListener('click', () => {
-      selectedMovementClient = button.dataset.client;
-      renderMovement();
-    }));
-    return;
-  }
-
-  const clientProducts = products.filter(product => product.client === selectedMovementClient);
-  content.innerHTML = `<button type="button" class="back-button" id="movementBack">← Todos os clientes</button><p class="view-intro">Atualize a localização do produto. A alteração será salva automaticamente.</p><div class="movement-product-list">${clientProducts.map(product => `<article class="movement-product"><div class="movement-product-info"><strong>${escapeHtml(product.description)}</strong><small>SKU ${escapeHtml(product.sku || '—')} · EAN ${escapeHtml(product.ean)}</small></div><label>Localização<input class="location-input" data-location-ean="${escapeHtml(product.ean)}" type="text" maxlength="80" value="${escapeHtml(product.location || '')}" placeholder="Ex.: Rua A, Prateleira 02"></label></article>`).join('')}</div>`;
-  document.getElementById('movementBack').addEventListener('click', () => { selectedMovementClient = null; renderMovement(); });
-  content.querySelectorAll('[data-location-ean]').forEach(input => input.addEventListener('change', () => {
-    const product = products.find(item => item.ean === input.dataset.locationEan);
-    if (!product) return;
-    product.location = input.value.trim();
-    saveProducts();
-    renderInventory();
-    selectedMovementClient = product.client;
-    renderMovement();
-  }));
-}
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
-}
-
-function showModal({eyebrow, title, description, icon = '＋', content}) {
-  document.getElementById('modalEyebrow').textContent = eyebrow;
-  document.getElementById('modalTitle').textContent = title;
-  document.getElementById('modalDescription').textContent = description;
-  document.getElementById('modalIcon').textContent = icon;
-  modalBody.innerHTML = content;
-  modalBackdrop.classList.remove('hidden');
-  const firstInput = modalBody.querySelector('input:not([readonly]), select');
-  if (firstInput) setTimeout(() => firstInput.focus(), 40);
-}
-
-function closeModal() {
-  modalBackdrop.classList.add('hidden');
-  pendingEan = '';
-  pendingScan = null;
-  setTimeout(() => eanInput.focus(), 30);
-}
-
-function promptScanDetails(ean) {
-  const product = findProductByEan(ean);
-  pendingEan = ean;
-  showModal({
-    eyebrow: 'DADOS DA LEITURA', title: 'Informe endereço e quantidade',
-    description: 'Confirme o endereço e a quantidade bipada. Para uma caixa master, informe o número de caixas.',
-    icon: '↗',
-    content: `<form id="scanDetailsForm">
-      <div class="form-group"><label for="scanLocation">Endereço *</label><input id="scanLocation" maxlength="80" value="${escapeHtml(product?.location || '')}" placeholder="Ex.: Rua A, Prateleira 02" required></div>
-      <div class="form-group"><label for="scanQuantity">Quantidade bipada *</label><input id="scanQuantity" type="number" min="1" step="1" value="1" required></div>
-      <div class="form-group"><label for="scanExpiration">Data de validade</label><input id="scanExpiration" type="date"></div>
-      <div class="inline-error" id="scanDetailsError"></div>
-      <div class="modal-actions"><button class="primary-button" type="submit">Continuar</button></div>
-    </form>`
-  });
-  document.getElementById('scanDetailsForm').addEventListener('submit', event => {
-    event.preventDefault();
-    const quantity = Number(document.getElementById('scanQuantity').value);
-    const location = document.getElementById('scanLocation').value.trim();
-    if (!location) {
-      document.getElementById('scanDetailsError').textContent = 'Informe o endereço do produto.';
-      return;
-    }
-    if (!Number.isSafeInteger(quantity) || quantity < 1) {
-      document.getElementById('scanDetailsError').textContent = 'Informe uma quantidade inteira maior que zero.';
-      return;
-    }
-    const expirationDate = document.getElementById('scanExpiration').value;
-    pendingScan = {ean, location, quantity, expirationDate};
-    const existingProduct = findProductByEan(ean);
-    if (existingProduct) {
-      const amount = existingProduct.ean === ean
-        ? quantity
-        : existingProduct.masters.find(master => master.ean === ean).unitsPerCase * quantity;
-      existingProduct.location = location;
-      if (expirationDate) existingProduct.expirationDate = expirationDate;
-      existingProduct.quantity += amount;
-      registerScan(existingProduct, amount);
-      saveProducts();
-      renderInventory();
-      renderDashboard();
-      closeModal();
-      showMessage(existingProduct.ean === ean
-        ? `Produto unitário registrado: +${amount} unidade(s) de ${existingProduct.description}.`
-        : `Caixa master registrada: +${amount} unidades de ${existingProduct.description}.`);
-      return;
-    }
-    showTypeChoice(ean);
-  });
-}
-
-function showTypeChoice(ean) {
-  pendingEan = ean;
-  showModal({
-    eyebrow: 'EAN NÃO CADASTRADO', title: 'Que tipo de código é este?',
-    description: `O código ${ean} ainda não está no inventário. Identifique o tipo para continuar.`, icon: '?',
-    content: `<div class="choice-card" data-choice="unit"><span class="choice-symbol">▥</span><span><strong>Produto unitário</strong><small>Cadastrar SKU, descrição e cliente.</small></span></div>
-      <div class="choice-card" data-choice="master"><span class="choice-symbol">▣</span><span><strong>Caixa master</strong><small>Vincular a um produto e informar unidades por caixa.</small></span></div>
-      <div class="inline-error" id="choiceError"></div>`
-  });
-  modalBody.querySelectorAll('[data-choice]').forEach(card => card.addEventListener('click', () => {
-    const scannedEan = pendingEan;
-    if (card.dataset.choice === 'unit') showUnitForm(scannedEan);
-    else showMasterForm(scannedEan);
-  }));
-}
-
-function showUnitForm(ean) {
-  pendingEan = ean;
-  showModal({
-    eyebrow: 'CADASTRO DE PRODUTO', title: 'Novo produto unitário',
-    description: `Preencha os dados para cadastrar o EAN ${ean}. Endereço e quantidade foram informados na etapa anterior.`,
-    content: `<form id="unitForm">
-      <div class="form-group"><label for="unitEan">EAN unitário</label><input id="unitEan" value="${escapeHtml(ean)}" readonly></div>
-      <div class="form-row"><div class="form-group"><label for="sku">SKU</label><input id="sku" maxlength="60" placeholder="Opcional"></div>
-      <div class="form-group"><label for="client">Cliente *</label><select id="client" required><option value="" disabled selected>Selecione um cliente</option>${[...new Set(products.map(product => product.client).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR')).map(client => `<option value="${escapeHtml(client)}">${escapeHtml(client)}</option>`).join('')}<option value="__new__">Novo Cliente</option></select><input id="newClient" maxlength="80" placeholder="Digite o nome do cliente" hidden></div></div>
-      <div class="form-group"><label for="description">Descrição do produto *</label><input id="description" required maxlength="120" placeholder="Nome ou descrição"></div>
-      <div class="inline-error" id="unitError"></div><div class="modal-actions"><button class="primary-button" type="submit">Salvar produto</button></div>
-    </form>`
-  });
-  const clientSelect = document.getElementById('client');
-  const newClientInput = document.getElementById('newClient');
-  clientSelect.addEventListener('change', () => {
-    const isNewClient = clientSelect.value === '__new__';
-    newClientInput.hidden = !isNewClient;
-    newClientInput.required = isNewClient;
-    if (isNewClient) newClientInput.focus();
-  });
-
-  document.getElementById('unitForm').addEventListener('submit', event => {
-    event.preventDefault();
-    if (findProductByEan(ean)) {
-      document.getElementById('unitError').textContent = 'Este EAN já está vinculado a um produto ou caixa master.';
-      return;
-    }
-    const selectedClient = clientSelect.value === '__new__' ? newClientInput.value.trim() : clientSelect.value;
-    if (!selectedClient) {
-      document.getElementById('unitError').textContent = 'Selecione ou informe um cliente.';
-      return;
-    }
-    const initialQuantity = pendingScan?.quantity || 1;
-    const initialLocation = pendingScan?.location || '';
-    const newProduct = {ean, sku: document.getElementById('sku').value.trim(), description: document.getElementById('description').value.trim(), client: selectedClient, location: initialLocation, expirationDate: pendingScan?.expirationDate || '', quantity: initialQuantity, masters: []};
-    products.push(newProduct);
-    registerScan(newProduct, initialQuantity);
-    saveProducts(); renderInventory(); renderDashboard(); closeModal(); showMessage(`Produto cadastrado e ${initialQuantity} unidade(s) adicionada(s) ao estoque.`);
-  });
-}
-
-function showMasterForm(masterEan, unitEan = '') {
-  pendingEan = masterEan;
-  const matched = unitEan ? products.find(product => product.ean === unitEan) : null;
-  showModal({
-    eyebrow: 'CADASTRO DE CAIXA', title: 'Vincular caixa master',
-    description: `Informe o EAN unitário já cadastrado e quantas unidades há na caixa ${masterEan}.`, icon: '▣',
-    content: `<form id="masterForm">
-      <div class="form-group"><label for="masterEan">EAN da caixa master</label><input id="masterEan" value="${escapeHtml(masterEan)}" readonly></div>
-      <div class="form-group"><label for="linkedEan">EAN do produto unitário *</label><div class="ean-entry"><input id="linkedEan" inputmode="numeric" value="${escapeHtml(unitEan)}" placeholder="Bipe ou digite o EAN unitário" required><button type="button" class="secondary-button" id="masterCameraOpen" aria-label="Ler EAN unitário com a câmera">Câmera</button></div></div>
-      <div id="linkedProduct" class="link-product" ${matched ? '' : 'hidden'}>${matched ? `<strong>${escapeHtml(matched.description)}</strong>SKU ${escapeHtml(matched.sku)} · ${escapeHtml(matched.client)}` : ''}</div>
-      <div class="form-group"><label for="caseQuantity">Unidades por caixa *</label><input id="caseQuantity" type="number" min="1" step="1" required placeholder="Ex.: 12"></div>
-      <p class="view-intro">Endereço e quantidade de caixas bipadas foram informados na etapa anterior.</p>
-      <div class="inline-error" id="masterError"></div><div class="modal-actions"><button type="button" class="secondary-button" id="cancelMaster">Voltar</button><button class="primary-button" type="submit">Vincular caixa</button></div>
-    </form>`
-  });
-  const linkedInput = document.getElementById('linkedEan');
-  const showLinkedProduct = () => {
-    const product = products.find(item => item.ean === cleanEan(linkedInput.value));
-    const box = document.getElementById('linkedProduct');
-    if (!product) { box.hidden = true; box.innerHTML = ''; return; }
-    box.hidden = false;
-    box.innerHTML = `<strong>${escapeHtml(product.description)}</strong>SKU ${escapeHtml(product.sku)} · ${escapeHtml(product.client)}`;
-  };
-  linkedInput.addEventListener('input', showLinkedProduct);
-  linkedInput.addEventListener('change', showLinkedProduct);
-  linkedInput.addEventListener('keydown', event => {
-    if (event.key === 'Enter') { event.preventDefault(); showLinkedProduct(); document.getElementById('caseQuantity').focus(); }
-  });
-  document.getElementById('cancelMaster').addEventListener('click', () => showTypeChoice(masterEan));
-  document.getElementById('masterForm').addEventListener('submit', event => {
-    event.preventDefault();
-    const product = products.find(item => item.ean === cleanEan(linkedInput.value));
-    const error = document.getElementById('masterError');
-    const quantity = Number(document.getElementById('caseQuantity').value);
-    if (!product) { error.textContent = 'EAN unitário não cadastrado. Cadastre o produto antes de vinculá-lo.'; return; }
-    if (findProductByEan(masterEan)) { error.textContent = 'Este EAN já está vinculado a um produto ou caixa master.'; return; }
-    if (!Number.isSafeInteger(quantity) || quantity < 1) { error.textContent = 'Informe uma quantidade inteira maior que zero.'; return; }
-    const scannedCases = pendingScan?.quantity || 1;
-    const addedUnits = quantity * scannedCases;
-    product.masters.push({ean: masterEan, unitsPerCase: quantity});
-    product.location = pendingScan?.location || product.location;
-    if (pendingScan?.expirationDate) product.expirationDate = pendingScan.expirationDate;
-    product.quantity += addedUnits;
-    registerScan(product, addedUnits);
-    saveProducts(); renderInventory(); renderDashboard(); closeModal(); showMessage(`Caixa master vinculada: +${addedUnits} unidades de ${product.description}.`);
-  });
-}
-
-async function openCamera(target = 'scan') {
-  cameraTarget = target;
-  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-    cameraStatus.textContent = 'A câmera precisa de uma conexão segura (HTTPS) e de permissão do navegador.';
-    cameraStatus.classList.add('error');
-    cameraBackdrop.classList.remove('hidden');
-    return;
-  }
-  if (!('BarcodeDetector' in window)) {
-    cameraStatus.textContent = 'A leitura por câmera não é compatível com este navegador. Use um leitor conectado ou digite o EAN.';
-    cameraStatus.classList.add('error');
-    cameraBackdrop.classList.remove('hidden');
-    return;
-  }
-
-  cameraBackdrop.classList.remove('hidden');
-  cameraStatus.classList.remove('error');
-  cameraStatus.textContent = 'Solicitando acesso à câmera…';
-  try {
-    const supported = await BarcodeDetector.getSupportedFormats();
-    const formats = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'itf', 'code_128'].filter(format => supported.includes(format));
-    if (!formats.length) throw new Error('Este navegador não oferece formatos de código de barras compatíveis.');
-    barcodeDetector = new BarcodeDetector({formats});
-    cameraStream = await navigator.mediaDevices.getUserMedia({video: {facingMode: {ideal: 'environment'}}, audio: false});
-    cameraVideo.srcObject = cameraStream;
-    await cameraVideo.play();
-    cameraActive = true;
-    cameraStatus.textContent = 'Mantenha o código de barras visível na câmera.';
-    scanCameraFrame();
-  } catch (error) {
-    stopCamera();
-    cameraStatus.textContent = error.name === 'NotAllowedError'
-      ? 'Acesso à câmera negado. Permita o uso da câmera nas configurações do navegador.'
-      : (error.message || 'Não foi possível iniciar a câmera. Verifique a permissão e tente novamente.');
-    cameraStatus.classList.add('error');
-  }
-}
-
-async function scanCameraFrame() {
-  if (!cameraActive) return;
-  if (!cameraScanPending && cameraVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-    cameraScanPending = true;
-    try {
-      const detections = await barcodeDetector.detect(cameraVideo);
-      const code = detections.find(item => /^\d{8,14}$/.test(item.rawValue));
-      if (code) {
-        stopCamera();
-        cameraBackdrop.classList.add('hidden');
-        if (cameraTarget === 'master') {
-          const linkedInput = document.getElementById('linkedEan');
-          if (linkedInput) {
-            linkedInput.value = code.rawValue;
-            linkedInput.dispatchEvent(new Event('input', {bubbles: true}));
-            linkedInput.focus();
-          }
-        } else {
-          eanInput.value = code.rawValue;
-          scanForm.requestSubmit();
-        }
-        cameraTarget = 'scan';
-        return;
-      }
-    } catch {
-      cameraStatus.textContent = 'Não foi possível ler a imagem. Tente enquadrar novamente o código.';
-    } finally {
-      cameraScanPending = false;
-    }
-  }
-  if (cameraActive) setTimeout(scanCameraFrame, 180);
-}
-
-function stopCamera() {
-  cameraActive = false;
-  if (cameraStream) cameraStream.getTracks().forEach(track => track.stop());
-  cameraStream = null;
-  cameraVideo.srcObject = null;
-}
-
-function closeCamera() {
-  stopCamera();
-  cameraBackdrop.classList.add('hidden');
-  cameraStatus.classList.remove('error');
-  eanInput.focus();
-}
-
-function showMessage(message, isError = false) {
-  scanMessage.textContent = message;
-  scanMessage.classList.toggle('error', isError);
-  clearTimeout(showMessage.timer);
-  showMessage.timer = setTimeout(() => { scanMessage.textContent = ''; }, 6000);
-}
-
-scanForm.addEventListener('submit', event => {
-  event.preventDefault();
-  const ean = cleanEan(eanInput.value);
-  if (!ean) { showMessage('Leia ou digite um código EAN para continuar.', true); return; }
-  eanInput.value = '';
-  promptScanDetails(ean);
-});
-
-document.getElementById('cameraOpen').addEventListener('click', () => openCamera('scan'));
-const viewSections = {
-  dashboard: document.getElementById('dashboardView'),
-  conferencia: document.getElementById('conferenciaView'),
-  movimentacao: document.getElementById('movimentacaoView'),
-  estoque: document.getElementById('estoqueView'),
-  gestao: document.getElementById('gestaoView'),
-  estatisticas: document.getElementById('estatisticasView')
-};
-
-document.querySelectorAll('.nav-item[data-view]').forEach(link => link.addEventListener('click', event => {
-  event.preventDefault();
-  if (link.dataset.view === 'gestao' && !isAdmin()) return;
-  showView(link.dataset.view);
-  if (window.matchMedia('(max-width: 650px)').matches) document.querySelector('.sidebar').classList.remove('expanded');
-}));
-
-document.getElementById('sidebarToggle').addEventListener('click', event => {
-  const sidebar = document.querySelector('.sidebar');
-  const mobile = window.matchMedia('(max-width: 650px)').matches;
-  sidebar.classList.toggle(mobile ? 'expanded' : 'collapsed');
-  const expanded = mobile ? sidebar.classList.contains('expanded') : !sidebar.classList.contains('collapsed');
-  event.currentTarget.setAttribute('aria-expanded', String(expanded));
-  event.currentTarget.setAttribute('aria-label', expanded ? 'Recolher menu' : 'Expandir menu');
-});
-modalBody.addEventListener('click', event => {
-  if (event.target.id === 'masterCameraOpen') openCamera('master');
-});
-document.getElementById('cameraClose').addEventListener('click', closeCamera);
-cameraBackdrop.addEventListener('click', event => { if (event.target === cameraBackdrop) closeCamera(); });
-document.getElementById('modalClose').addEventListener('click', closeModal);
-modalBackdrop.addEventListener('click', event => { if (event.target === modalBackdrop) closeModal(); });
-document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && !cameraBackdrop.classList.contains('hidden')) closeCamera();
-  else if (event.key === 'Escape' && !modalBackdrop.classList.contains('hidden')) closeModal();
-});
-document.getElementById('inventorySearchForm').addEventListener('submit', event => {
-  event.preventDefault();
-  inventoryFilter = cleanEan(document.getElementById('inventoryEan').value);
-  renderInventory();
-});
-document.getElementById('clearInventoryFilter').addEventListener('click', () => {
-  inventoryFilter = '';
-  renderInventory();
-  document.getElementById('inventoryEan').focus();
-});
-
-document.getElementById('loginForm').addEventListener('submit', event => {
-  event.preventDefault();
-  const login = document.getElementById('loginUser').value.trim().toLowerCase();
-  const password = document.getElementById('loginPassword').value;
-  const user = users.find(item => item.login.toLowerCase() === login && item.password === password);
-  if (!user) {
-    document.getElementById('loginError').textContent = 'Login ou senha incorretos.';
-    return;
-  }
-  document.getElementById('loginError').textContent = '';
-  enterApp(user);
-});
-document.getElementById('logoutButton').addEventListener('click', () => {
-  sessionStorage.removeItem(SESSION_KEY);
-  currentUser = null;
-  document.getElementById('appShell').hidden = true;
-  document.getElementById('loginScreen').hidden = false;
-  document.getElementById('loginPassword').value = '';
-  document.getElementById('loginUser').focus();
-});
-
-document.getElementById('userForm').addEventListener('submit', event => {
-  event.preventDefault();
-  if (!isAdmin()) return;
-  const login = document.getElementById('newLogin').value.trim();
-  const error = document.getElementById('userFormError');
-  if (users.some(user => user.login.toLowerCase() === login.toLowerCase())) {
-    error.textContent = 'Este login já está sendo utilizado.';
-    return;
-  }
-  users.push({name: document.getElementById('userName').value.trim(), login, password: document.getElementById('newPassword').value, phone: document.getElementById('userPhone').value.trim(), email: document.getElementById('userEmail').value.trim(), role: document.getElementById('userRole').value});
-  saveUsers();
-  event.currentTarget.reset();
-  error.textContent = '';
-  renderUsers();
-});
-
-document.getElementById('userRows').addEventListener('click', event => {
-  const button = event.target.closest('[data-delete-user]');
-  if (!button || !isAdmin()) return;
-  const login = button.dataset.deleteUser;
-  if (login === 'admin' || login === currentUser.login) return;
-  users = users.filter(user => user.login !== login);
-  saveUsers();
-  renderUsers();
-});
-
-function renderUsers() {
-  const rows = document.getElementById('userRows');
-  rows.innerHTML = users.map(user => `<tr><td>${escapeHtml(user.name)}</td><td>${escapeHtml(user.login)}</td><td>${escapeHtml(user.phone || '—')}</td><td>${escapeHtml(user.email || '—')}</td><td>${user.role === 'admin' ? 'Administrador' : 'Operador'}</td><td>${user.login === 'admin' || user.login === currentUser?.login ? '—' : `<button class="remove-unit-button" type="button" data-delete-user="${escapeHtml(user.login)}">Remover</button>`}</td></tr>`).join('');
-}
-
-function periodStart(period) {
-  const now = new Date();
-  const start = new Date(now);
-  if (period === '24h') return new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  if (period.endsWith('d')) start.setDate(start.getDate() - Number(period.slice(0, -1)));
-  else if (period.endsWith('m')) start.setMonth(start.getMonth() - Number(period.slice(0, -1)));
-  else if (period.endsWith('y')) start.setFullYear(start.getFullYear() - Number(period.slice(0, -1)));
-  return start;
-}
-
-function renderStatistics() {
-  const operatorGroup = document.getElementById('operatorFilterGroup');
-  const operatorSelect = document.getElementById('statisticsOperator');
-  let login = currentUser.login;
-  if (isAdmin()) {
-    operatorGroup.hidden = false;
-    const operators = users.filter(user => user.role !== 'admin');
-    const previous = operatorSelect.value;
-    operatorSelect.innerHTML = '<option value="all">Todos os operadores</option>' + operators.map(user => `<option value="${escapeHtml(user.login)}">${escapeHtml(user.name)} (${escapeHtml(user.login)})</option>`).join('');
-    if (operators.some(user => user.login === previous)) operatorSelect.value = previous;
-    login = operatorSelect.value;
-  } else {
-    operatorGroup.hidden = true;
-  }
-  const start = periodStart(document.getElementById('statisticsPeriod').value);
-  const scans = scanHistory.filter(scan => {
-    const timestamp = new Date(scan.timestamp);
-    return timestamp >= start && timestamp <= new Date() && (isAdmin() ? login === 'all' || scan.login === login : scan.login === currentUser.login);
-  });
-  const quantity = scans.reduce((sum, scan) => sum + (Number(scan.quantity) || 0), 0);
-  document.getElementById('statisticsSummary').innerHTML = `<article class="stat-card"><div class="stat-top"><span>Produtos bipados</span><span class="stat-icon purple">▦</span></div><strong>${quantity.toLocaleString('pt-BR')}</strong><small>Unidades registradas no período</small></article><article class="stat-card"><div class="stat-top"><span>Leituras realizadas</span><span class="stat-icon blue">↗</span></div><strong>${scans.length.toLocaleString('pt-BR')}</strong><small>Bipagens registradas</small></article><article class="stat-card"><div class="stat-top"><span>Clientes atendidos</span><span class="stat-icon orange">♙</span></div><strong>${new Set(scans.map(scan => scan.client).filter(Boolean)).size.toLocaleString('pt-BR')}</strong><small>Clientes distintos</small></article>`;
-  const byClient = new Map();
-  const byProduct = new Map();
-  scans.forEach(scan => {
-    const clientKey = scan.client || 'Sem cliente';
-    byClient.set(clientKey, (byClient.get(clientKey) || 0) + (Number(scan.quantity) || 0));
-    const productKey = scan.productEan;
-    const existing = byProduct.get(productKey) || {name: scan.productName || 'Produto', client: scan.client || '—', quantity: 0};
-    existing.quantity += Number(scan.quantity) || 0;
-    byProduct.set(productKey, existing);
-  });
-  const listMarkup = entries => entries.length ? `<ul class="statistics-list">${entries.map(([name, value]) => `<li><span><strong>${escapeHtml(name)}</strong>${value.detail ? `<small>${escapeHtml(value.detail)}</small>` : ''}</span><b>${escapeHtml(value.count.toLocaleString('pt-BR'))} un.</b></li>`).join('')}</ul>` : '<p class="statistics-empty">Sem bipagens neste período.</p>';
-  const clients = [...byClient.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => [name, {count}]);
-  const rankedProducts = [...byProduct.entries()].sort((a, b) => b[1].quantity - a[1].quantity).slice(0, 10).map(([ean, item]) => [item.name, {count: item.quantity, detail: `${item.client} · EAN ${ean}`}]);
-  document.getElementById('statisticsClients').innerHTML = listMarkup(clients);
-  document.getElementById('statisticsProducts').innerHTML = listMarkup(rankedProducts);
-}
-
- document.getElementById('statisticsPeriod').addEventListener('change', renderStatistics);
-document.getElementById('statisticsOperator').addEventListener('change', renderStatistics);
-
-document.getElementById('todayLabel').textContent = new Intl.DateTimeFormat('pt-BR', {weekday:'short', day:'2-digit', month:'short', year:'numeric'}).format(new Date());
-const savedLogin = sessionStorage.getItem(SESSION_KEY);
-const savedUser = users.find(user => user.login === savedLogin);
-if (savedUser) enterApp(savedUser);
-else document.getElementById('loginUser').focus();
-setTimeout(() => { if (currentUser && !viewSections.conferencia.hidden) eanInput.focus(); }, 100);
+const baseConferencePrompt=promptScanDetails;
+promptScanDetails=function(ean){if(scanOperation()==='saida'){luminaRegisterExit(ean,selectedScanType());return}baseConferencePrompt(ean)};
+function luminaRememberLot(product,lot,location){rememberConference({lot,location,client:product?.client||'',ean:product?.ean||''})}
+function luminaRegisterExit(ean,type){if(!isAdmin())return;const product=type==='master'?products.find(p=>p.masters.some(m=>m.ean===ean)):products.find(p=>p.ean===ean);if(!product){showMessage(type==='master'?'Caixa master não cadastrada.':'Produto não cadastrado.',true);return}const master=type==='master'?product.masters.find(m=>m.ean===ean):null,factor=master?.unitsPerCase||1,lots=(product.lots||[]).filter(l=>Number(l.quantity)>0),choices=lots.length?lots:[...(product.quantity>0?[{lot:'Sem lote detalhado',expirationDate:'',location:product.location,quantity:product.quantity}]:[])];showModal({eyebrow:'CONFERÊNCIA · SAÍDA',title:'Registrar expedição',description:`${product.description}${master?` · ${factor} unidades por caixa`:''}`,icon:'−',content:`<form id="luminaExitForm"><div class="form-group"><label for="luminaExitLot">Lote *</label><select id="luminaExitLot" required>${choices.map((lot,i)=>`<option value="${i}">${escapeHtml(lot.lot||'Sem identificação')} · ${escapeHtml(formatDate(lot.expirationDate)||'sem validade')} · saldo ${Number(lot.quantity)||0} un.</option>`).join('')}</select></div><div class="form-group"><label for="luminaExitQty">Quantidade ${master?'de caixas master':'de unidades'} *</label><input id="luminaExitQty" type="number" min="1" step="1" value="1" required></div><p class="inline-error" id="luminaExitError">${choices.length?'':'Estoque insuficiente para expedição.'}</p><div class="modal-actions"><button class="primary-button" type="submit" ${choices.length?'':'disabled'}>Confirmar saída</button></div></form>`});$('luminaExitForm').addEventListener('submit',event=>{event.preventDefault();const lot=choices[Number($('luminaExitLot').value)],count=Number($('luminaExitQty').value),error=$('luminaExitError');if(!lot||!Number.isSafeInteger(count)||count<1){error.textContent='Selecione o lote e informe uma quantidade válida.';return}const units=count*factor;if(units>Number(lot.quantity)||units>product.quantity){error.textContent=`Saldo insuficiente. Disponível no lote: ${Math.floor(Number(lot.quantity)/factor)} ${master?'caixa(s)':'unidade(s)'}.`;return}if(lots.length)lot.quantity-=units;product.quantity-=units;registerScan(product,units,'saida');luminaRememberLot(product,lot.lot,lot.location||product.location);saveProducts();renderInventory();renderDashboard();renderMovement();renderInventoryExport();playScanFeedback();closeModal();showMessage(`${count} ${master?'caixa(s) master':'unidade(s)'} expedida(s): −${units} un. de ${product.description}.`)})}
+function openAudit(ean=''){showModal({eyebrow:'CONSULTA RÁPIDA',title:'Auditoria de EAN',description:'Inspecione produto, caixa master, saldo, lotes e endereços sem alterar o estoque.',icon:'⌕',content:`<form id="luminaAuditForm" autocomplete="off"><div class="form-group"><label for="luminaAuditEan">EAN unitário ou caixa master</label><div class="ean-entry"><input id="luminaAuditEan" value="${escapeHtml(ean)}" placeholder="Digite ou bipe um EAN"><button type="button" class="secondary-button" id="luminaAuditCamera">Câmera</button><button type="submit" class="secondary-button">Consultar</button></div></div></form><div id="luminaAuditResult" class="audit-result" aria-live="polite"></div>`});$('luminaAuditForm').addEventListener('submit',event=>{event.preventDefault();const code=cleanEan($('luminaAuditEan').value),product=products.find(p=>p.ean===code||p.masters.some(m=>m.ean===code)),master=product?.masters.find(m=>m.ean===code),result=$('luminaAuditResult');if(!product){result.innerHTML='<p>EAN não encontrado no inventário.</p>';return}result.innerHTML=`<h3>${escapeHtml(product.description)}</h3><p>Cliente: ${escapeHtml(product.client)} · SKU: ${escapeHtml(product.sku||'—')}</p><p>EAN unitário: ${escapeHtml(product.ean)}${master?` · Caixa master: ${escapeHtml(master.ean)} (${master.unitsPerCase} un./caixa)`:''}</p><p>Saldo total: <strong>${product.quantity.toLocaleString('pt-BR')} un.</strong></p><ul>${(product.lots||[]).map(l=>`<li>Lote ${escapeHtml(l.lot||'—')} · ${escapeHtml(formatDate(l.expirationDate)||'Sem validade')} · ${escapeHtml(l.location||product.location||'Sem endereço')} · ${Number(l.quantity)||0} un.</li>`).join('')||'<li>Sem lotes detalhados.</li>'}</ul>`});$('luminaAuditCamera').addEventListener('click',()=>openCamera('audit'));if(ean)$('luminaAuditForm').requestSubmit()}
+function openLabel(ean){const product=products.find(p=>p.ean===ean);if(!product)return;const lot=product.lots?.find(l=>Number(l.quantity)>0)||product.lots?.[0]||{};showModal({eyebrow:'ETIQUETA',title:'Etiqueta para impressão',description:'Imprima ou salve a etiqueta em PDF.',icon:'▤',content:`<article class="print-label"><strong>${escapeHtml(product.description)}</strong><span>SKU: ${escapeHtml(product.sku||'—')}</span><span>EAN: ${escapeHtml(product.ean)}</span><span>Lote: ${escapeHtml(lot.lot||'—')}</span><span>Validade: ${escapeHtml(formatDate(lot.expirationDate||product.expirationDate)||'—')}</span><span>Localização: ${escapeHtml(lot.location||product.location||'—')}</span></article><div class="modal-actions"><button class="primary-button" id="luminaPrintLabel" type="button">Imprimir</button></div>`});$('luminaPrintLabel').addEventListener('click',()=>{document.body.classList.add('printing-label');window.print();document.body.classList.remove('printing-label')})}
+const baseOpenProductEditor=openProductEditor;
+openProductEditor=function(ean){baseOpenProductEditor(ean);const product=products.find(p=>p.ean===ean),form=$('editProductForm');if(!product||!form)return;const error=$('editProductError'),group=error?.previousElementSibling;if(group?.classList.contains('form-group'))group.insertAdjacentHTML('afterend','<div class="form-row lumina-add-master"><div class="form-group"><label for="luminaMasterEan">Adicionar EAN master</label><input id="luminaMasterEan" inputmode="numeric" placeholder="EAN da caixa"></div><div class="form-group"><label for="luminaMasterUnits">Unidades por caixa</label><input id="luminaMasterUnits" type="number" min="1" step="1" placeholder="Ex.: 12"></div></div><p class="product-sub">Preencha os dois campos e salve junto com as demais alterações.</p>');const deleteButton=$('deleteProductButton');if(deleteButton)deleteButton.dataset.luminaProduct=ean;form.addEventListener('submit',event=>{if(!form.checkValidity())return;const masterEan=$('luminaMasterEan')?.value.trim(),units=Number($('luminaMasterUnits')?.value);if(!masterEan)return;if(!Number.isSafeInteger(units)||units<1){event.preventDefault();error.textContent='Informe unidades por caixa válidas para a nova caixa master.';return}if(findProductByEan(masterEan)&&!product.masters.some(master=>master.ean===masterEan)){event.preventDefault();error.textContent='Este EAN já está vinculado a outro produto ou caixa.';return}setTimeout(()=>{if(!product.masters.some(master=>master.ean===masterEan))product.masters.push({ean:masterEan,unitsPerCase:units});saveProducts();renderInventory()},0)},{once:true})};
+document.addEventListener('click',event=>{const button=event.target.closest('#deleteProductButton');if(!button)return;event.preventDefault();event.stopImmediatePropagation();const ean=button.dataset.luminaProduct;if(button.dataset.confirmDelete==='yes'){const index=products.findIndex(p=>p.ean===ean);if(index>=0){products.splice(index,1);saveProducts();renderInventory();renderDashboard();renderMovement();renderInventoryExport();closeModal()}return}button.dataset.confirmDelete='yes';button.textContent='Confirmar exclusão';$('editProductError').textContent='Clique novamente para excluir o produto e todos os vínculos master.'},true);
+const baseRenderUsers=renderUsers;
+renderUsers=function(){baseRenderUsers();$('userRows').querySelectorAll('tr').forEach(row=>{const login=row.cells[1]?.textContent.trim(),user=users.find(item=>item.login===login),cell=row.cells[row.cells.length-1];if(!user||!cell)return;const button=document.createElement('button');button.type='button';button.className='edit-product-button';button.textContent='Editar';button.addEventListener('click',()=>{if(!isAdmin())return;const locked=user.login==='admin'||user.login===currentUser.login;showModal({eyebrow:'GESTÃO DE USUÁRIOS',title:'Editar colaborador',description:`Atualize os dados de ${user.name}.`,content:`<form id="luminaUserEdit"><div class="form-group"><label for="luminaUserName">Nome *</label><input id="luminaUserName" maxlength="100" value="${escapeHtml(user.name)}" required></div><div class="form-row"><div class="form-group"><label for="luminaUserPhone">Telefone</label><input id="luminaUserPhone" maxlength="30" value="${escapeHtml(user.phone||'')}"></div><div class="form-group"><label for="luminaUserEmail">E-mail</label><input id="luminaUserEmail" type="email" maxlength="120" value="${escapeHtml(user.email||'')}"></div></div><div class="form-group"><label for="luminaUserRole">Perfil</label><select id="luminaUserRole" ${locked?'disabled':''}><option value="user" ${user.role==='user'?'selected':''}>Operador</option><option value="admin" ${user.role==='admin'?'selected':''}>Administrador</option></select></div><div class="modal-actions"><button class="primary-button" type="submit">Salvar alterações</button></div></form>`});$('luminaUserEdit').addEventListener('submit',event=>{event.preventDefault();user.name=$('luminaUserName').value.trim();user.phone=$('luminaUserPhone').value.trim();user.email=$('luminaUserEmail').value.trim();if(!locked)user.role=$('luminaUserRole').value;saveUsers();renderUsers();if(user.login===currentUser.login)$('signedInUser').textContent=user.name;closeModal()})});cell.prepend(button)})};
+$('inventoryClientFilter').addEventListener('change',renderInventory);$('inventoryStatusFilter').addEventListener('change',renderInventory);$('auditOpen').addEventListener('click',()=>openAudit());
+document.addEventListener('keydown',event=>{if($('conferenciaView').hidden||!event.altKey)return;if(event.key==='1'){document.querySelector('input[name="scanType"][value="unit"]').checked=true;eanInput.focus()}if(event.key==='2'){document.querySelector('input[name="scanType"][value="master"]').checked=true;eanInput.focus()}});
+const baseScanCameraFrame=scanCameraFrame;
+scanCameraFrame=async function(){if(!cameraActive)return;if(!modalBackdrop.classList.contains('hidden')&&!['master','inventory','audit'].includes(cameraTarget)||pendingScan){setTimeout(scanCameraFrame,180);return}if(cameraTarget==='audit'&&cameraActive&&barcodeDetector&&cameraVideo.readyState>=HTMLMediaElement.HAVE_CURRENT_DATA){try{const found=await barcodeDetector.detect(cameraVideo),code=found.find(item=>/^\d{8,14}$/.test(item.rawValue));if(code){handleCameraCode(code.rawValue);return}}catch{}if(cameraActive)setTimeout(scanCameraFrame,180);return}baseScanCameraFrame()};
+const baseHandleCameraCode=handleCameraCode;
+handleCameraCode=function(value){if(cameraTarget==='audit'){if(!cameraActive)return;stopCamera();cameraBackdrop.classList.add('hidden');const input=$('luminaAuditEan');if(input){input.value=value;$('luminaAuditForm').requestSubmit()}cameraTarget='scan';return}baseHandleCameraCode(value)};
